@@ -68,6 +68,7 @@ class TodoTUI:
 
         self._bg_sync = None  # BackgroundSync instance
         self._main_sync = None  # MainSync instance (set in _start_background_sync)
+        self._setup_group_name = None  # when set, setup wizard targets this group
         self._initial_target = initial_target
 
     def run(self):
@@ -650,6 +651,7 @@ class TodoTUI:
         self._setup_provider = None
         self._setup_token = None
         self._setup_username = None
+        self._setup_group_name = None
 
     def _do_confirmed_delete(self):
         idx = self._delete_target_index
@@ -907,6 +909,7 @@ class TodoTUI:
             'e': self._cmd_edit,
             'rm': self._cmd_rm,
             'new': self._cmd_new,
+            'group': self._cmd_group,
             'setup': self._cmd_setup,
             'sync': self._cmd_sync,
             'push': self._cmd_push,
@@ -1150,6 +1153,13 @@ class TodoTUI:
         self._add_output("  <n>             Toggle shorthand")
         self._add_output("Projects:")
         self._add_output("  new <name>      Create project")
+        self._add_output("Groups:")
+        self._add_output("  group new <name>          Create a group")
+        self._add_output("  group add <proj> <group>  Add project to group")
+        self._add_output("  group sync <group>        Setup git remote for group")
+        self._add_output("  group invite <grp> <user> Invite user to group")
+        self._add_output("  group join <grp> <url>    Join a shared group")
+        self._add_output("  group list                List groups")
         self._add_output("Sync:")
         self._add_output("  setup           Setup multi-device sync")
         self._add_output("  sync            Sync now")
@@ -1383,6 +1393,102 @@ class TodoTUI:
         self.modal_cursor = 0
         self._add_output(f"✓ Created project: {name}")
 
+    def _cmd_group(self, args):
+        """Handle group sub-commands: new, add, sync, list"""
+        if not args:
+            self._add_output("✗ Usage: group <new|add|sync|list> ...")
+            return
+
+        sub = args[0].lower()
+
+        if sub == 'new':
+            if len(args) < 2:
+                self._add_output("✗ Usage: group new <name>")
+                return
+            name = args[1]
+            try:
+                self.manager.create_group(name)
+                self._add_output(f"✓ Created group: {name}")
+            except ValueError as e:
+                self._add_output(f"✗ {e}")
+
+        elif sub == 'add':
+            if len(args) < 3:
+                self._add_output("✗ Usage: group add <project> <group>")
+                return
+            project_name, group_name = args[1], args[2]
+            try:
+                self.manager.add_project_to_group(project_name, group_name)
+                self._add_output(f"✓ Added '{project_name}' to group '{group_name}'")
+            except ValueError as e:
+                self._add_output(f"✗ {e}")
+
+        elif sub == 'sync':
+            if len(args) < 2:
+                self._add_output("✗ Usage: group sync <group>")
+                return
+            group_name = args[1]
+            registry = self.manager.load_registry()
+            if group_name not in registry["groups"]:
+                self._add_output(f"✗ Group '{group_name}' not found")
+                return
+            existing_remote = registry["groups"][group_name].get("remote")
+            if existing_remote:
+                self._add_output(f"ℹ Group '{group_name}' already has remote: {existing_remote}")
+                self._add_output("  Reconfigure?")
+                self._setup_group_name = group_name
+                self.input_mode = 'setup_confirm'
+                self.input_buffer = ''
+                self.input_cursor = 0
+                return
+            self._setup_group_name = group_name
+            self._start_group_or_main_wizard()
+
+        elif sub == 'invite':
+            if len(args) < 3:
+                self._add_output("✗ Usage: group invite <group> <username>")
+                return
+            group_name, username = args[1], args[2]
+            try:
+                self._add_output(f"  Inviting '{username}' to '{group_name}'...")
+                if self.manager.invite_to_group(group_name, username):
+                    self._add_output(f"✓ Invited '{username}' as collaborator on '{group_name}'")
+                else:
+                    self._add_output(f"✗ Failed to invite '{username}'. Check the username and your permissions.")
+            except ValueError as e:
+                self._add_output(f"✗ {e}")
+
+        elif sub == 'join':
+            if len(args) < 3:
+                self._add_output("✗ Usage: group join <group> <remote-url>")
+                return
+            group_name, remote_url = args[1], args[2]
+            try:
+                self._add_output(f"  Joining group '{group_name}'...")
+                if self.manager.join_group(group_name, remote_url):
+                    self._add_output(f"✓ Joined group '{group_name}'")
+                    self._refresh_tasks()
+                else:
+                    self._add_output(f"✗ Failed to join '{group_name}'. Check the URL and your access.")
+            except ValueError as e:
+                self._add_output(f"✗ {e}")
+
+        elif sub == 'list':
+            registry = self.manager.load_registry()
+            groups = registry.get("groups", {})
+            if not groups:
+                self._add_output("  No groups. Use 'group new <name>' to create one.")
+                return
+            for name, info in groups.items():
+                remote = info.get("remote") or "no remote"
+                projects = info.get("projects", [])
+                proj_str = ", ".join(projects) if projects else "empty"
+                self._add_output(f"  {name}: [{proj_str}] ({remote})")
+
+        else:
+            self._add_output(f"✗ Unknown group command: {sub}")
+            self._add_output("  Usage: group <new|add|sync|invite|join|list>")
+
     def _cmd_setup(self, args):
         """Start interactive sync setup wizard."""
         main_sync = MainSync(self.manager.home_dir, self.manager.config)
@@ -1395,12 +1501,35 @@ class TodoTUI:
             self.input_cursor = 0
             return
 
+        self._setup_group_name = None
+        self._start_group_or_main_wizard()
+
+    def _start_group_or_main_wizard(self):
+        """Start the setup wizard, auto-detecting existing PAT if available."""
+        # Try to reuse existing token from config
+        for provider in ("github", "gitlab"):
+            token = resolve_token(provider, self.manager.config, interactive=False)
+            if token:
+                prov = self._make_provider(provider, token)
+                username = prov.validate_token(token) if prov else None
+                if username:
+                    label = "GitHub" if provider == "github" else "GitLab"
+                    self._add_output(f"✓ Authenticated as {username} ({label})")
+                    self._setup_provider = provider
+                    self._setup_token = token
+                    self._setup_username = username
+                    self._show_repo_choice()
+                    return
+        # No existing token — fall through to provider selection
         self._start_setup_wizard()
 
     def _start_setup_wizard(self):
         """Begin the setup wizard from step 1 (provider selection)."""
         self._add_output("")
-        self._add_output("  Multi-device sync setup")
+        if self._setup_group_name:
+            self._add_output(f"  Git remote setup for group '{self._setup_group_name}'")
+        else:
+            self._add_output("  Multi-device sync setup")
         self._add_output("  Sync your todos across devices via a private git repo.")
         self._add_output("")
         self._add_output("  Provider:")
@@ -1418,8 +1547,10 @@ class TodoTUI:
 
         if step == 'setup_confirm':
             if text.lower() in ('y', 'yes', ''):
+                group = self._setup_group_name
                 self._reset_input_mode()
-                self._start_setup_wizard()
+                self._setup_group_name = group  # preserve across reset
+                self._start_group_or_main_wizard()
             else:
                 self._add_output("(cancelled)")
                 self._reset_input_mode()
@@ -1453,9 +1584,10 @@ class TodoTUI:
 
         if step == 'setup_repo_choice':
             if text == "1":
+                default_name = self._setup_group_name or '.todos'
                 self._add_output("  Repo name:")
                 self.input_mode = 'setup_repo_name'
-                self.input_buffer = '.todos'
+                self.input_buffer = default_name
                 self.input_cursor = len(self.input_buffer)
             else:
                 self._add_output("  Enter repo URL:")
@@ -1590,13 +1722,21 @@ class TodoTUI:
             self.input_cursor = 0
 
     def _finish_setup(self, remote_url):
-        """Apply the sync configuration."""
-        self._add_output("  Configuring sync...")
-        if self.manager.sync_setup(remote_url):
-            self._add_output(f"✓ Sync configured: {remote_url}")
-            self._start_background_sync()
+        """Apply the sync configuration — routes to group or main sync."""
+        group = self._setup_group_name
+        if group:
+            self._add_output(f"  Configuring sync for group '{group}'...")
+            if self.manager.setup_group_sync(group, remote_url):
+                self._add_output(f"✓ Group '{group}' synced: {remote_url}")
+            else:
+                self._add_output("✗ Setup failed. Check your URL and auth.")
         else:
-            self._add_output("✗ Setup failed. Check your URL and auth.")
+            self._add_output("  Configuring sync...")
+            if self.manager.sync_setup(remote_url):
+                self._add_output(f"✓ Sync configured: {remote_url}")
+                self._start_background_sync()
+            else:
+                self._add_output("✗ Setup failed. Check your URL and auth.")
         self._reset_input_mode()
 
     def _make_provider(self, provider, token):

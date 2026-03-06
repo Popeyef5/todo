@@ -32,6 +32,11 @@ class GitProvider(ABC):
         """Return HTTPS clone URL"""
         pass
 
+    @abstractmethod
+    def add_collaborator(self, owner: str, repo: str, username: str) -> bool:
+        """Invite a user as a collaborator on a repo. Returns True on success."""
+        pass
+
 
 class GitHubProvider(GitProvider):
     """GitHub API provider"""
@@ -102,6 +107,14 @@ class GitHubProvider(GitProvider):
 
     def get_https_url(self, owner: str, repo: str) -> str:
         return f"https://github.com/{owner}/{repo}.git"
+
+    def add_collaborator(self, owner: str, repo: str, username: str) -> bool:
+        resp = self._request(
+            f"/repos/{owner}/{repo}/collaborators/{username}",
+            method="PUT",
+            data={"permission": "push"},
+        )
+        return resp is not None
 
 
 class GitLabProvider(GitProvider):
@@ -175,6 +188,28 @@ class GitLabProvider(GitProvider):
     def get_https_url(self, owner: str, repo: str) -> str:
         return f"https://{self.host}/{owner}/{repo}.git"
 
+    def add_collaborator(self, owner: str, repo: str, username: str) -> bool:
+        # Look up user_id from username
+        resp = self._request(f"/users?username={urllib.parse.quote(username)}")
+        if resp is None:
+            return False
+        try:
+            users = json.loads(resp.read().decode("utf-8"))
+            if not users:
+                return False
+            user_id = users[0]["id"]
+        except (json.JSONDecodeError, KeyError, IndexError):
+            return False
+
+        # Add as Developer (access_level=30)
+        project_path = urllib.parse.quote(f"{owner}/{repo}", safe="")
+        resp = self._request(
+            f"/projects/{project_path}/members",
+            method="POST",
+            data={"user_id": user_id, "access_level": 30},
+        )
+        return resp is not None
+
 
 class GenericGitProvider(GitProvider):
     """Fallback provider for non-GitHub/GitLab hosts"""
@@ -190,6 +225,9 @@ class GenericGitProvider(GitProvider):
 
     def get_https_url(self, owner: str, repo: str) -> str:
         return ""
+
+    def add_collaborator(self, owner: str, repo: str, username: str) -> bool:
+        return False
 
 
 def parse_remote_url(url: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:

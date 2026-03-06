@@ -10,6 +10,7 @@ from .config import TodoConfig
 from .conflict import ConflictManager
 from ..sync.main_sync import MainSync
 from ..sync.shared_sync import SharedSync
+from ..sync.providers import parse_remote_url, detect_provider
 from ..ui.tasks import ensure_task_ids
 
 
@@ -144,6 +145,137 @@ class TodoManager:
                             known_names.add(stem)
 
         return paths
+
+    # ── Groups ──────────────────────────────────────────────
+
+    def create_group(self, name: str):
+        """Creates a group entry in the registry and shared/<name>/ directory"""
+        registry = self.load_registry()
+        if name in registry["groups"]:
+            raise ValueError(f"Group '{name}' already exists")
+
+        group_dir = self.shared_dir / name
+        group_dir.mkdir(parents=True, exist_ok=True)
+
+        registry["groups"][name] = {
+            "remote": None,
+            "projects": [],
+            "created": datetime.now().isoformat(),
+        }
+        self.save_registry(registry)
+
+    def add_project_to_group(self, project_name: str, group_name: str):
+        """Adds an existing project to an existing group"""
+        registry = self.load_registry()
+
+        if project_name not in registry["projects"]:
+            raise ValueError(f"Project '{project_name}' not found")
+        if group_name not in registry["groups"]:
+            raise ValueError(f"Group '{group_name}' not found")
+        if project_name in registry["groups"][group_name]["projects"]:
+            raise ValueError(f"Project '{project_name}' is already in group '{group_name}'")
+
+        src = self.data_dir / f"{project_name}.todo"
+        dst = self.shared_dir / group_name / f"{project_name}.todo"
+        if src.exists():
+            shutil.copy2(src, dst)
+
+        registry["groups"][group_name]["projects"].append(project_name)
+        if group_name not in registry["projects"][project_name].get("shared_in", []):
+            registry["projects"][project_name].setdefault("shared_in", []).append(group_name)
+
+        self.save_registry(registry)
+
+    def setup_group_sync(self, group_name: str, remote_url: str) -> bool:
+        """Sets up git remote for an existing group"""
+        registry = self.load_registry()
+        if group_name not in registry["groups"]:
+            raise ValueError(f"Group '{group_name}' not found")
+
+        group_dir = self.shared_dir / group_name
+        sync = SharedSync(group_dir, self.config)
+        if not sync.setup(remote_url):
+            return False
+
+        registry["groups"][group_name]["remote"] = remote_url
+        self.save_registry(registry)
+        return True
+
+    def reconstitute_groups(self) -> list:
+        """After a fresh clone, reconstitute groups with remotes but no local directory"""
+        registry = self.load_registry()
+        reconstituted = []
+
+        for group_name, group_info in registry["groups"].items():
+            remote = group_info.get("remote")
+            group_dir = self.shared_dir / group_name
+            if remote and not group_dir.exists():
+                sync = SharedSync(group_dir, self.config)
+                if sync.clone(remote):
+                    for todo_file in group_dir.glob("*.todo"):
+                        dst = self.data_dir / todo_file.name
+                        shutil.copy2(todo_file, dst)
+                    reconstituted.append(group_name)
+
+        return reconstituted
+
+    def invite_to_group(self, group_name: str, username: str) -> bool:
+        """Invite a user as collaborator on a group's remote repo.
+
+        Uses the stored remote URL to detect provider (GitHub/GitLab)
+        and calls the provider API to add the collaborator.
+        """
+        registry = self.load_registry()
+        if group_name not in registry["groups"]:
+            raise ValueError(f"Group '{group_name}' not found")
+
+        remote = registry["groups"][group_name].get("remote")
+        if not remote:
+            raise ValueError(f"Group '{group_name}' has no remote configured")
+
+        host, owner, repo = parse_remote_url(remote)
+        if not owner or not repo:
+            raise ValueError(f"Cannot parse remote URL: {remote}")
+
+        provider = detect_provider(remote, self.config)
+        return provider.add_collaborator(owner, repo, username)
+
+    def join_group(self, group_name: str, remote_url: str) -> bool:
+        """Join an existing shared group by cloning its remote repo."""
+        group_dir = self.shared_dir / group_name
+        if group_dir.exists():
+            raise ValueError(f"Group '{group_name}' already exists locally")
+
+        sync = SharedSync(group_dir, self.config)
+        if not sync.clone(remote_url):
+            return False
+
+        registry = self.load_registry()
+
+        registry["groups"][group_name] = {
+            "remote": remote_url,
+            "projects": [],
+            "created": datetime.now().isoformat(),
+        }
+
+        for todo_file in group_dir.glob("*.todo"):
+            name = todo_file.stem
+            dst = self.data_dir / f"{name}.todo"
+            shutil.copy2(todo_file, dst)
+            ensure_task_ids(dst)
+
+            registry["groups"][group_name]["projects"].append(name)
+
+            if name not in registry["projects"]:
+                registry["projects"][name] = {
+                    "created": datetime.now().isoformat(),
+                    "shared_in": [group_name],
+                }
+            elif group_name not in registry["projects"][name].get("shared_in", []):
+                registry["projects"][name].setdefault("shared_in", []).append(group_name)
+
+        self.save_registry(registry)
+        return True
 
     # ── Sharing ───────────────────────────────────────────────
 
@@ -318,7 +450,10 @@ class TodoManager:
     def sync_clone(self, remote_url: str) -> bool:
         """Clone existing ~/.todo/ from remote"""
         main_sync = MainSync(self.home_dir, self.config)
-        return main_sync.setup(remote_url, clone=True)
+        result = main_sync.setup(remote_url, clone=True)
+        if result:
+            self.reconstitute_groups()
+        return result
 
     # ── Nuke ──────────────────────────────────────────────────
 
