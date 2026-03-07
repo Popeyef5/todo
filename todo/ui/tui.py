@@ -24,6 +24,7 @@ from todo.ui.tasks import (
 )
 
 CTRL_T = 20
+CTRL_F = 6
 
 
 class TodoTUI:
@@ -38,6 +39,7 @@ class TodoTUI:
         # Mode
         self.mode = 'repl'  # 'repl' or 'modal'
         self.modal_cursor = 0
+        self.fullscreen = False
 
         # REPL state
         self.input_buffer = ''
@@ -129,6 +131,10 @@ class TodoTUI:
                 self._toggle_mode()
                 continue
 
+            if key == CTRL_F:
+                self._toggle_fullscreen()
+                continue
+
             if self.mode == 'modal':
                 self._handle_modal_key(key)
             else:
@@ -139,18 +145,27 @@ class TodoTUI:
     def _create_windows(self):
         h, w = self.stdscr.getmaxyx()
 
-        self.task_h = max(h // 2, 3)
+        if self.fullscreen:
+            # Task panel takes everything except status bar + input line
+            self.task_h = max(h - 2, 3)
+            self.output_h = 0
+        else:
+            self.task_h = max(h // 2, 3)
+            self.output_h = max(h - self.task_h - 2, 1)
+
         self.status_y = self.task_h
         self.output_y = self.task_h + 1
-        self.output_h = max(h - self.task_h - 2, 1)
         self.input_y = h - 1
         self.width = w
         self.height = h
 
         self.task_win = curses.newwin(self.task_h, w, 0, 0)
         self.task_win.keypad(True)
-        self.output_win = curses.newwin(self.output_h, w, self.output_y, 0)
-        self.output_win.keypad(True)
+        if self.output_h > 0:
+            self.output_win = curses.newwin(self.output_h, w, self.output_y, 0)
+            self.output_win.keypad(True)
+        else:
+            self.output_win = None
 
     # ── Rendering ─────────────────────────────────────────────────────
 
@@ -299,12 +314,14 @@ class TodoTUI:
     def _render_status_bar(self):
         h, w = self.stdscr.getmaxyx()
         mode_label = " MODAL " if self.mode == 'modal' else " REPL "
+        if self.fullscreen:
+            mode_label += "⛶ "
         project_label = f" {self.current_project}" if self.current_project else " all"
 
         if self.mode == 'modal':
-            hint = " ↑↓:nav  t:toggle  a:add  A:child  e:edit  d:del  u:use  c:collapse  q:quit"
+            hint = " ↑↓:nav  t:toggle  a:add  A:child  e:edit  d:del  u:use  c:collapse  ^F:fullscreen  q:quit"
         else:
-            hint = " Ctrl+T: switch mode"
+            hint = " Ctrl+T: switch mode  Ctrl+F: fullscreen"
 
         bar = f"{mode_label}│{project_label} │{hint}"
         bar = bar.ljust(w - 1)
@@ -318,6 +335,8 @@ class TodoTUI:
 
     def _render_output_panel(self):
         win = self.output_win
+        if win is None:
+            return
         win.erase()
         h, w = win.getmaxyx()
         if h <= 0:
@@ -408,6 +427,20 @@ class TodoTUI:
         if self.input_mode:
             return
         self.mode = 'modal' if self.mode == 'repl' else 'repl'
+        if self.mode == 'repl' and self.fullscreen:
+            self.fullscreen = False
+            self._create_windows()
+        self._full_render()
+
+    def _toggle_fullscreen(self):
+        if self.input_mode:
+            return
+        self.fullscreen = not self.fullscreen
+        if self.fullscreen and self.mode == 'repl':
+            self.mode = 'modal'
+        self._create_windows()
+        self.stdscr.clear()
+        self.stdscr.refresh()
         self._full_render()
 
     # ── Modal mode key handling ───────────────────────────────────────
