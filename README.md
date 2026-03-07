@@ -1,57 +1,42 @@
 # Todo
 
-A git-like TODO management system with an interactive CLI and multi-device synchronization.
+A terminal-based TODO manager with a split-pane TUI, project groups, and multi-device sync via git.
 
 ## Features
 
-🚀 **Interactive CLI** - Manage todos directly from a terminal prompt  
-📱 **Multi-device sync** - Keep todos in sync across all your devices  
-🔄 **Conflict detection** - Smart merging with hash-based conflict detection  
-🔗 **Symlink management** - Central view of all todos across projects  
-⚡ **Auto-sync** - Changes sync automatically on enter/exit  
+🖥️ **Split-pane TUI** — Persistent task panel + CLI in one screen, with modal and REPL modes  
+📁 **Projects & groups** — Organize todos into projects, share them via groups  
+📱 **Multi-device sync** — Git-backed sync across devices with background polling  
+🔄 **Smart merge** — Task-level conflict detection using stable IDs and checksums  
+⚡ **Auto-sync** — Changes propagate automatically on enter/exit  
 
 ## Quick Start
 
 ```bash
 # Install
-pip install todo
+pip install -e .
 
-# Initialize a project
-cd ~/my-project
-todo init
-
-# Launch interactive mode
+# Launch interactive TUI
 todo
 
-# Or scope to a specific project
+# Scope to a specific project
 todo my-project
+
+# Create a project from the CLI
+todo create my-project
 ```
 
-## Interactive Mode
+## Interactive TUI
 
-Running `todo` with no arguments enters an interactive session:
+Running `todo` launches a curses-based split-pane interface. The upper half shows tasks, the lower half is a CLI output area with an input prompt.
 
-```
-  todo  interactive mode
-  Type help for commands, q to quit
+### Two modes
 
-╭ my-project — 3 pending, 1 done ──────────────────────╮
-│  my-project › backend.todo                            │
-│    1 [ ] implement auth                               │
-│    2 [x] add tests                                    │
-│    3 [ ] deploy                                       │
-╰───────────────────────────────────────────────────────╯
-todo (my-project)> toggle 1
-✓ #1 → done: implement auth
+- **REPL mode** (default) — Type commands in the input prompt
+- **Modal mode** (`Ctrl+T`) — Navigate tasks with `j`/`k`, act with single keys
+- **Fullscreen** (`Ctrl+F`) — Expand the task panel to fill the screen (modal only, exits on `Ctrl+T`)
 
-todo (my-project)> add "write docs"
-✓ Added: write docs
-
-todo (my-project)> q
-  bye 👋
-```
-
-### Interactive Commands
+### REPL Commands
 
 | Command | Description |
 |---------|-------------|
@@ -61,64 +46,92 @@ todo (my-project)> q
 | `ls` | List tasks |
 | `show <n>` | Show task details |
 | `add <text>` | Add a new task |
-| `toggle <n>` / `t <n>` / `<n>` | Toggle a task checkbox |
+| `toggle <n>` / `t <n>` / `<n>` | Toggle a task |
 | `check <n>` | Mark task as done |
 | `uncheck <n>` | Mark task as not done |
-| `edit <n> <text>` | Edit task text |
-| `rm <n>` | Remove a task |
-| `new <name>` | Create a new .todo file |
+| `edit <n> <text>` / `e <n> <text>` | Edit task text |
+| `rm <n>` | Remove a task (and children) |
+| `new <name>` | Create a new project |
+| `share` | Share a project via a group |
+| `setup` | Configure sync (guided wizard) |
 | `sync` | Sync all files |
-| `push` | Push to global |
-| `pull` | Pull from projects |
-| `status` | Show status |
+| `push` | Push changes |
+| `pull` | Pull changes |
 | `groups` | List groups |
+| `status` | Show status |
+| `clear` | Clear output |
 | `q` / `quit` | Exit |
 
-## CLI Commands (non-interactive)
+### Modal Keys
 
-### Project Management
-- `todo init` - Initialize project in current directory
-- `todo init --name "project-name" --virtual` - Create virtual project
-- `todo create "project-name" [--description "desc"]` - Create virtual project
-- `todo add "name.of.todo"` - Add new todo file to current project
-- `todo add "name.of.todo" --project "project-name"` - Add todo to specific project
-- `todo scan [--depth N]` - Scan for existing .todo files
-- `todo list` - List tracked projects
+| Key | Action |
+|-----|--------|
+| `j` / `k` / `↑` / `↓` | Navigate tasks |
+| `t` | Toggle task |
+| `a` | Add task |
+| `A` | Add child task |
+| `e` | Edit task |
+| `d` | Delete task |
+| `u` | Switch project (use) |
+| `c` | Collapse/expand project |
+| `q` | Quit |
 
-### Synchronization  
-- `todo pull` - Pull all projects to central global
-- `todo push` - Push central global to all projects
-- `todo view --project X` - Filtered view by project
-- `todo view --grep "term"` - Filtered view by search
+## CLI Commands
 
-### Multi-Device Sync
-- `todo sync setup <url>` - Setup git sync
-- `todo sync clone <url>` - Clone existing todos
-- `todo sync status` - Show sync status
-- `todo sync now` - Force sync
+For scripting and bootstrapping — most day-to-day work is done in the TUI.
 
-### Configuration
-- `todo config --editor vim` - Set editor
-- `todo config --auto-sync-on-edit false` - Disable auto-sync
-- `todo config --toc-mode simple` - Set TOC style
+```bash
+# Project management
+todo create <name>                  # Create a new project
+todo add <text> -p <project>        # Add a task
+
+# Sync
+todo sync                           # Sync now
+todo sync clone <url>               # Clone todos from a remote (new device setup)
+todo share join <group> <url>       # Join a shared group
+
+# Configuration
+todo config                         # View config
+todo config --editor vim            # Set editor
+todo config --github-token <token>  # Set GitHub token
+todo config --auto-sync-on-edit false
+
+# Maintenance
+todo nuke [--force]                 # Delete all todo data
+```
 
 ## Directory Structure
 
 ```
 ~/.todo/
-├── .global.todo             # Central view of all todos
-├── links/                   # Symlinks to all tracked todos
-│   └── project-name/
-│       └── feature.todo -> /path/to/project/feature.todo
-├── projects/                # Virtual projects
-│   └── project-name/
-├── groups/                  # Project groups
-├── cache/                   # Conflict detection cache
-├── config.json              # Configuration
-├── .todo.json              # Project registry
-└── .git/                    # Git repo for sync (optional)
+├── data/                   # Project .todo files (one per project)
+│   ├── my-project.todo
+│   └── work.todo
+├── shared/                 # Shared group directories (each is a git repo)
+│   └── team/
+│       ├── work.todo
+│       └── .git/
+├── cache/                  # Checksums for conflict detection
+│   └── checksums.json
+├── config.json             # Configuration (editor, tokens, sync settings)
+├── registry.json           # Project and group registry
+└── .git/                   # Main git repo for multi-device sync (optional)
 ```
+
+## Sync Architecture
+
+Each device has a main `~/.todo/` git repo for syncing private data across devices. Shared groups live in `shared/<group>/`, each with its own git repo that collaborators can push/pull to.
+
+On sync:
+1. Commit local changes in main repo
+2. Fetch + pull main (if behind) — gets own changes from other devices
+3. Fetch + pull each shared group (if behind) — gets collaborator changes
+4. Merge group files into `data/` with task-level conflict resolution
+5. Copy `data/` back to shared groups
+6. Commit + push main and each group
+
+Conflicts are detected via stored checksums (3-way: local, remote, last-known). When both sides diverge, tasks are merged by stable ID — local wins on text conflicts.
 
 ## License
 
-MIT License - see LICENSE file for details.
+MIT

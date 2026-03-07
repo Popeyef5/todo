@@ -18,16 +18,9 @@ def main():
         return
 
     known_commands = {
-        'init', 'create', 'add', 'list', 'remove', 'config', 'nuke',
-        'sync', 'share', '--help', '-h', '-i', '--interactive',
+        'create', 'add', 'config', 'nuke',
+        'sync', 'share', '--help', '-h',
     }
-
-    # Explicit interactive mode
-    if sys.argv[1] in ('-i', '--interactive'):
-        manager = TodoManager()
-        target = sys.argv[2] if len(sys.argv) >= 3 else None
-        _run_interactive(manager, initial_target=target)
-        return
 
     # Unknown subcommand → interactive mode scoped to target
     if sys.argv[1] not in known_commands:
@@ -44,21 +37,10 @@ def main():
     create_parser = subparsers.add_parser('create', help='Create a new project')
     create_parser.add_argument('name', help='Project name')
 
-    # init (alias for create)
-    init_parser = subparsers.add_parser('init', help='Create a new project (alias for create)')
-    init_parser.add_argument('name', help='Project name')
-
     # add
     add_parser = subparsers.add_parser('add', help='Add a task to a project')
     add_parser.add_argument('text', help='Task text')
     add_parser.add_argument('--project', '-p', help='Project name (required)')
-
-    # list
-    subparsers.add_parser('list', help='List all projects')
-
-    # remove
-    remove_parser = subparsers.add_parser('remove', help='Remove a project')
-    remove_parser.add_argument('name', help='Project name')
 
     # config
     config_parser = subparsers.add_parser('config', help='View/set configuration')
@@ -77,19 +59,12 @@ def main():
     sync_parser = subparsers.add_parser('sync', help='Sync operations')
     sync_subparsers = sync_parser.add_subparsers(dest='sync_action')
     sync_subparsers.add_parser('now', help='Sync now')
-    sync_subparsers.add_parser('status', help='Show sync status')
-    sync_setup = sync_subparsers.add_parser('setup', help='Setup git sync')
-    sync_setup.add_argument('remote_url', help='Git remote URL')
     sync_clone = sync_subparsers.add_parser('clone', help='Clone from remote')
     sync_clone.add_argument('remote_url', help='Git remote URL')
 
     # share
-    share_parser = subparsers.add_parser('share', help='Share a project via a group')
+    share_parser = subparsers.add_parser('share', help='Share operations')
     share_subparsers = share_parser.add_subparsers(dest='share_action')
-    share_add = share_subparsers.add_parser('add', help='Share a project with a group')
-    share_add.add_argument('project', help='Project name')
-    share_add.add_argument('group', help='Group name')
-    share_add.add_argument('--remote', help='Git remote URL for the group')
     share_join = share_subparsers.add_parser('join', help='Join a shared group')
     share_join.add_argument('group', help='Group name')
     share_join.add_argument('remote_url', help='Git remote URL')
@@ -98,7 +73,7 @@ def main():
     manager = TodoManager()
 
     try:
-        if args.command in ('create', 'init'):
+        if args.command == 'create':
             path = manager.create_project(args.name)
             print(f"Created project: {args.name} ({path})")
 
@@ -113,21 +88,6 @@ def main():
                 sys.exit(1)
             add_task_to_file(path, args.text)
             print(f"Added to {args.project}: {args.text}")
-
-        elif args.command == 'list':
-            projects = manager.list_projects()
-            if not projects:
-                print("No projects. Run 'todo create <name>' to create one.")
-            else:
-                for p in projects:
-                    shared = f" (shared: {', '.join(p['shared_in'])})" if p['shared_in'] else ""
-                    print(f"  {p['name']}: {p['todo_count']} pending{shared}")
-
-        elif args.command == 'remove':
-            if manager.remove_project(args.name):
-                print(f"Removed: {args.name}")
-            else:
-                print(f"Not found: {args.name}")
 
         elif args.command == 'config':
             changed = False
@@ -168,28 +128,14 @@ def main():
                 print("All todo data removed. Run 'todo create <name>' to start fresh.")
 
         elif args.command == 'sync':
-            if args.sync_action == 'setup':
-                if manager.sync_setup(args.remote_url):
-                    print(f"Git sync configured: {args.remote_url}")
-                else:
-                    print("Setup failed")
-                    sys.exit(1)
-            elif args.sync_action == 'clone':
+            if args.sync_action == 'clone':
                 if manager.sync_clone(args.remote_url):
                     print("Cloned successfully")
                 else:
                     print("Clone failed")
                     sys.exit(1)
-            elif args.sync_action == 'status':
-                from todo.sync.main_sync import MainSync
-                from todo.sync.providers import detect_provider, parse_remote_url
-                status = MainSync(manager.home_dir, manager.config).get_sync_status()
-                print(f"  Enabled: {status['enabled']}")
-                print(f"  Remote:  {status.get('remote_url', 'none')}")
-                if status.get('remote_url'):
-                    host, _, _ = parse_remote_url(status['remote_url'])
-                    print(f"  Host:    {host or 'unknown'}")
             else:
+                # 'now' or no subcommand — just sync
                 result = manager.sync()
                 conflicts = result.get("conflicts", [])
                 if conflicts:
@@ -200,17 +146,14 @@ def main():
                     print("Synced")
 
         elif args.command == 'share':
-            if args.share_action == 'add':
-                manager.share_project(args.project, args.group, args.remote)
-                print(f"Shared '{args.project}' via group '{args.group}'")
-            elif args.share_action == 'join':
+            if args.share_action == 'join':
                 if manager.share_join(args.group, args.remote_url):
                     print(f"Joined group '{args.group}'")
                 else:
                     print("Join failed")
                     sys.exit(1)
             else:
-                print("Use 'todo share --help'")
+                print("Use 'todo share join <group> <url>'")
 
         else:
             parser.print_help()
