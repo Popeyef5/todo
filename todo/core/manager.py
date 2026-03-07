@@ -365,28 +365,66 @@ class TodoManager:
     # ── Sync ──────────────────────────────────────────────────
 
     def sync(self) -> dict:
-        """Full sync: pull shared → commit main → push main → copy to shared → push shared.
-        
+        """Full sync: pull main → pull shared groups → merge → push main → push shared.
+
+        Order:
+          1. Commit local changes in main
+          2. Fetch+pull main (own changes from other devices)
+          3. Fetch+pull each shared group (collaborator changes) — only if behind/diverged
+          4. Merge shared group files → data/ (with conflict detection)
+          5. Ensure task IDs
+          6. Copy data/ → shared groups (with conflict detection)
+          7. Commit+push main
+          8. Commit+push each shared group
+
         Returns dict with sync results including any conflicts detected.
         """
         registry = self.load_registry()
         main_sync = MainSync(self.home_dir, self.config)
         conflicts = []
+        group_errors = {}
+        main_status = "no_git"
+        main_pulled = False
 
-        # 1. Pull shared repos → copy changed files to data/ (with conflict check)
+        # 1. Commit local changes in main
+        if (self.home_dir / ".git").exists():
+            main_sync._commit_all_changes("sync")
+
+        # 2. Fetch+pull main if behind/diverged (own changes from other devices)
+        if (self.home_dir / ".git").exists():
+            fetch_result = main_sync.smart_fetch()
+            main_status = fetch_result["status"]
+            if main_status in ("behind", "diverged"):
+                main_pulled = main_sync.pull()
+
+        # 3-4. Fetch+pull each shared group, merge into data/ only if pulled
         for group_name, group_info in registry["groups"].items():
             group_dir = self.shared_dir / group_name
             if not group_dir.exists() or not (group_dir / ".git").exists():
                 continue
             shared = SharedSync(group_dir, self.config)
-            shared.pull()
+
+            # 3. Only pull if remote has changes
+            fetch_result = shared.smart_fetch()
+            group_status = fetch_result["status"]
+            if group_status == "error":
+                group_errors[group_name] = "fetch failed"
+                continue
+            if group_status in ("behind", "diverged"):
+                if not shared.pull():
+                    group_errors[group_name] = "pull failed"
+                    continue
+            else:
+                # No incoming changes — skip merge, local data/ is authoritative
+                continue
+
+            # 4. Merge pulled group files → data/
             for todo_file in group_dir.glob("*.todo"):
                 dst = self.data_dir / todo_file.name
                 if dst.exists():
                     remote_content = todo_file.read_text()
                     conflict = self.conflict_manager.check_conflicts(dst, remote_content)
                     if conflict:
-                        # Both sides changed — do task-level merge
                         result = self.conflict_manager.merge_files(dst, remote_content)
                         dst.write_text(result["merged_content"])
                         if result["conflicts"]:
@@ -400,18 +438,14 @@ class TodoManager:
                     self.conflict_manager.update_checksum(dst)
                 ensure_task_ids(dst)
 
-        # 2. Ensure task IDs on all project files
+        # 5. Ensure task IDs on all project files
         for name, path in self.get_all_project_paths():
             ensure_task_ids(path)
 
-        # 3. Commit + smart sync main repo
-        if (self.home_dir / ".git").exists():
-            sync_result = main_sync.full_sync()
-        else:
-            sync_result = {"status": "no_git", "pulled": False, "pushed": False}
-
-        # 4. Copy shared project files from data/ → shared/<group>/ (with conflict check)
+        # 6. Copy data/ → shared groups (with conflict detection)
         for group_name, group_info in registry["groups"].items():
+            if group_name in group_errors:
+                continue
             group_dir = self.shared_dir / group_name
             if not group_dir.exists():
                 continue
@@ -432,15 +466,32 @@ class TodoManager:
                     else:
                         shutil.copy2(src, dst)
 
-        # 5. Commit+push each shared repo
+        # 7. Commit+push main
+        if (self.home_dir / ".git").exists():
+            main_sync._commit_all_changes("sync")
+            main_pushed = main_sync.push()
+        else:
+            main_pushed = False
+
+        # 8. Commit+push each shared group
         for group_name in registry["groups"]:
+            if group_name in group_errors:
+                continue
             group_dir = self.shared_dir / group_name
             if not group_dir.exists() or not (group_dir / ".git").exists():
                 continue
             shared = SharedSync(group_dir, self.config)
-            shared.full_sync()
+            shared._commit_all_changes("sync")
+            if not shared.push():
+                group_errors[group_name] = "push failed"
 
-        return {"sync": sync_result, "conflicts": conflicts}
+        sync_result = {
+            "status": main_status if (self.home_dir / ".git").exists() else "no_git",
+            "pulled": main_pulled,
+            "pushed": main_pushed,
+        }
+
+        return {"sync": sync_result, "conflicts": conflicts, "group_errors": group_errors}
 
     def sync_setup(self, remote_url: str) -> bool:
         """Setup git in ~/.todo/ with remote"""
