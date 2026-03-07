@@ -50,6 +50,7 @@ def main():
     config_parser.add_argument('--gitlab-token', help='GitLab API token')
     config_parser.add_argument('--gitlab-host', help='GitLab host (for self-hosted)')
     config_parser.add_argument('--sync-interval', type=int, help='Background sync interval (seconds)')
+    config_parser.add_argument('--theme', help='UI theme (modern, cyber, minimal)')
 
     # nuke
     nuke_parser = subparsers.add_parser('nuke', help='Remove all todo data')
@@ -115,6 +116,14 @@ def main():
                 manager.config.set('sync_interval', args.sync_interval)
                 print(f"Sync interval: {args.sync_interval}s")
                 changed = True
+            if args.theme:
+                from todo.ui.themes import set_theme, list_themes
+                if set_theme(args.theme):
+                    manager.config.set('theme', args.theme)
+                    print(f"Theme: {args.theme}")
+                    changed = True
+                else:
+                    print(f"Unknown theme: {args.theme} (available: {', '.join(list_themes())})")
             if not changed:
                 print("Configuration:")
                 for k, v in manager.config.config.items():

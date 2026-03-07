@@ -23,6 +23,7 @@ from todo.ui.tasks import (
     TaskRef, parse_tasks_from_file, toggle_task_in_file,
     add_task_to_file, edit_task_in_file, remove_task_from_file,
 )
+from todo.ui.themes import get_theme, set_theme, list_themes
 
 
 @contextlib.contextmanager
@@ -54,6 +55,11 @@ class TodoShell:
         self.dirty = False
         self._bg_sync = None  # BackgroundSync instance
 
+        # Load saved theme
+        saved_theme = manager.config.get("theme")
+        if saved_theme:
+            set_theme(saved_theme)
+
         # Try to set initial scope
         if initial_target:
             self._cmd_use([initial_target])
@@ -79,8 +85,8 @@ class TodoShell:
             commands = [
                 'help', 'projects', 'use', 'ls', 'show', 'add', 'toggle',
                 'check', 'uncheck', 'edit', 'rm', 'new', 'share', 'setup',
-                'sync', 'push', 'pull', 'groups', 'status', 'clear', 'quit',
-                'q', 'exit',
+                'sync', 'push', 'pull', 'groups', 'status', 'theme',
+                'clear', 'quit', 'q', 'exit',
             ]
 
             def completer(text, state):
@@ -156,6 +162,7 @@ class TodoShell:
                 'pull': self._cmd_pull,
                 'groups': self._cmd_groups,
                 'status': self._cmd_status,
+                'theme': self._cmd_theme,
                 'clear': self._cmd_clear,
                 'quit': self._cmd_quit,
                 'q': self._cmd_quit,
@@ -278,6 +285,7 @@ class TodoShell:
             "",
             f"  {render.color('Other', S.BOLD, S.BRIGHT_WHITE)}",
             f"    {render.color('groups', S.BRIGHT_CYAN)}              List groups",
+            f"    {render.color('theme', S.BRIGHT_CYAN)} {render.color('[name]', S.DIM)}       View/switch UI theme",
             f"    {render.color('clear', S.BRIGHT_CYAN)}               Clear screen",
             f"    {render.color('q', S.BRIGHT_CYAN)} / {render.color('quit', S.BRIGHT_CYAN)} / {render.color('exit', S.BRIGHT_CYAN)}     Exit",
             "",
@@ -749,6 +757,22 @@ class TodoShell:
             lines.append(f"  {render.color('Git sync:', S.DIM)} disabled")
 
         print(render.box("Status", lines))
+
+    def _cmd_theme(self, args):
+        if not args:
+            current = get_theme().name
+            available = list_themes()
+            print(render.info(f"Current theme: {render.color(current, S.BOLD)}"))
+            print(render.dim(f"  Available: {', '.join(available)}"))
+            print(render.dim(f"  Usage: theme <name>"))
+            return
+        name = args[0].lower()
+        if set_theme(name):
+            self.manager.config.set("theme", name)
+            print(render.success(f"Theme set to '{name}'"))
+        else:
+            print(render.error(f"Unknown theme: {name}"))
+            print(render.dim(f"  Available: {', '.join(list_themes())}"))
 
     def _cmd_clear(self, args):
         print("\033[2J\033[H", end="")

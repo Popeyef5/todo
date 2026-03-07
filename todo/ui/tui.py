@@ -22,6 +22,7 @@ from todo.ui.tasks import (
     TaskRef, parse_tasks_from_file, toggle_task_in_file,
     add_task_to_file, edit_task_in_file, remove_task_from_file,
 )
+from todo.ui.themes import get_theme, set_theme, list_themes
 
 CTRL_T = 20
 CTRL_F = 6
@@ -85,14 +86,13 @@ class TodoTUI:
 
         curses.start_color()
         curses.use_default_colors()
-        curses.init_pair(1, curses.COLOR_CYAN, -1)
-        curses.init_pair(2, curses.COLOR_GREEN, -1)
-        curses.init_pair(3, curses.COLOR_YELLOW, -1)
-        curses.init_pair(4, curses.COLOR_RED, -1)
-        curses.init_pair(5, curses.COLOR_BLUE, -1)
-        curses.init_pair(6, curses.COLOR_WHITE, curses.COLOR_BLUE)
-        curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_CYAN)
-        curses.init_pair(8, curses.COLOR_WHITE, -1)
+        self._apply_theme_colors()
+
+        # Load theme from config
+        saved_theme = self.manager.config.get("theme")
+        if saved_theme:
+            set_theme(saved_theme)
+            self._apply_theme_colors()
 
         # Initial scope
         if self._initial_target:
@@ -139,6 +139,14 @@ class TodoTUI:
                 self._handle_modal_key(key)
             else:
                 self._handle_repl_key(key)
+
+    # ── Theme ─────────────────────────────────────────────────────────
+
+    def _apply_theme_colors(self):
+        """Initialize curses color pairs from the current theme."""
+        theme = get_theme()
+        for i, (fg, bg) in enumerate(theme.curses_pairs):
+            curses.init_pair(i + 1, fg, bg)
 
     # ── Window management ─────────────────────────────────────────────
 
@@ -188,12 +196,13 @@ class TodoTUI:
         checked = sum(1 for t in self.tasks if t.checked)
         title = f" {scope} — {unchecked} pending, {checked} done "
 
+        theme = get_theme()
         try:
-            win.addstr(0, 0, "╭", curses.color_pair(1))
+            win.addstr(0, 0, theme.border_top_left, curses.color_pair(1))
             win.addstr(0, 1, title, curses.color_pair(1) | curses.A_BOLD)
             remaining = w - 2 - len(title)
             if remaining > 0:
-                win.addnstr(0, 1 + len(title), "─" * remaining, remaining, curses.color_pair(1))
+                win.addnstr(0, 1 + len(title), theme.border_h * remaining, remaining, curses.color_pair(1))
         except curses.error:
             pass
 
@@ -253,7 +262,7 @@ class TodoTUI:
             if kind == 'header':
                 project_name = value
                 is_collapsed = project_name in self.collapsed_projects
-                collapse_icon = "▸" if is_collapsed else "▾"
+                collapse_icon = theme.collapse_closed if is_collapsed else theme.collapse_open
                 label = f"  {collapse_icon} {project_name}"
                 try:
                     if is_highlighted:
@@ -269,7 +278,7 @@ class TodoTUI:
                 task_idx = value
                 task = self.tasks[task_idx]
                 idx_str = f"{task_idx + 1:>3}"
-                checkbox = "[x]" if task.checked else "[ ]"
+                checkbox = theme.checkbox_checked if task.checked else theme.checkbox_unchecked
                 depth = len(task.indent) // 4
                 indent_visual = "  " * depth
                 line_text = f"  {idx_str} {indent_visual}{checkbox} {task.text}"
@@ -304,7 +313,7 @@ class TodoTUI:
 
         # Bottom border
         try:
-            bottom = "╰" + "─" * max(w - 2, 0)
+            bottom = theme.border_bottom_left + theme.border_h * max(w - 2, 0)
             win.addnstr(h - 1, 0, bottom, w - 1, curses.color_pair(1))
         except curses.error:
             pass
@@ -404,9 +413,10 @@ class TodoTUI:
             return "repo URL: "
         if self.input_mode == 'setup_confirm':
             return "[Y/n]: "
+        theme = get_theme()
         if self.current_project:
-            return f"todo({self.current_project})> "
-        return "todo> "
+            return f"{theme.prompt_prefix}({self.current_project}){theme.prompt_arrow} "
+        return f"{theme.prompt_prefix}{theme.prompt_arrow} "
 
     def _position_cursor(self):
         if self.mode == 'repl' or self.input_mode:
@@ -948,6 +958,7 @@ class TodoTUI:
             'push': self._cmd_push,
             'pull': self._cmd_pull,
             'status': self._cmd_status,
+            'theme': self._cmd_theme,
             'clear': self._cmd_clear,
             'quit': self._cmd_quit,
             'q': self._cmd_quit,
@@ -1197,6 +1208,7 @@ class TodoTUI:
         self._add_output("  setup           Setup multi-device sync")
         self._add_output("  sync            Sync now")
         self._add_output("Other:")
+        self._add_output("  theme [name]    View/switch UI theme")
         self._add_output("  clear           Clear output")
         self._add_output("  quit/q          Exit")
         self._add_output("  Ctrl+T          Toggle modal mode")
@@ -1831,6 +1843,23 @@ class TodoTUI:
         self._add_output(f"  Tasks:    {len(self.tasks)} ({sum(1 for t in self.tasks if not t.checked)} pending)")
         git_dir = self.manager.home_dir / ".git"
         self._add_output(f"  Git sync: {'enabled' if git_dir.exists() else 'disabled'}")
+
+    def _cmd_theme(self, args):
+        if not args:
+            current = get_theme().name
+            available = list_themes()
+            self._add_output(f"  Current theme: {current}")
+            self._add_output(f"  Available: {', '.join(available)}")
+            self._add_output(f"  Usage: theme <name>")
+            return
+        name = args[0].lower()
+        if set_theme(name):
+            self._apply_theme_colors()
+            self.manager.config.set("theme", name)
+            self._add_output(f"✓ Theme set to '{name}'")
+        else:
+            self._add_output(f"✗ Unknown theme: {name}")
+            self._add_output(f"  Available: {', '.join(list_themes())}")
 
     def _cmd_clear(self, args):
         self.output_lines.clear()
