@@ -84,10 +84,10 @@ class TodoShell:
 
             # Tab completion
             commands = [
-                'help', 'projects', 'use', 'ls', 'show', 'add', 'toggle',
-                'check', 'uncheck', 'edit', 'rm', 'new', 'share', 'setup',
-                'sync', 'push', 'pull', 'groups', 'status', 'theme',
-                'clear', 'quit', 'q', 'exit',
+                'help', 'projects', 'use', 'ls', 'show', 'add', 'addc',
+                'toggle', 'check', 'uncheck', 'edit', 'rm', 'new', 'group',
+                'setup', 'sync', 'push', 'pull', 'config', 'nuke', 'link',
+                'unlink', 'status', 'theme', 'clear', 'quit', 'q', 'exit',
             ]
 
             def completer(text, state):
@@ -156,12 +156,16 @@ class TodoShell:
                 'e': self._cmd_edit,
                 'rm': self._cmd_rm,
                 'new': self._cmd_new,
-                'share': self._cmd_share,
+                'addc': self._cmd_addc,
+                'group': self._cmd_group,
                 'setup': self._cmd_setup,
                 'sync': self._cmd_sync,
                 'push': self._cmd_push,
                 'pull': self._cmd_pull,
-                'groups': self._cmd_groups,
+                'config': self._cmd_config,
+                'nuke': self._cmd_nuke,
+                'link': self._cmd_link,
+                'unlink': self._cmd_unlink,
                 'status': self._cmd_status,
                 'theme': self._cmd_theme,
                 'clear': self._cmd_clear,
@@ -267,6 +271,7 @@ class TodoShell:
             "",
             f"  {render.color('Editing', S.BOLD, S.BRIGHT_WHITE)}",
             f"    {render.color('add', S.BRIGHT_CYAN)} {render.color('<text>', S.DIM)}         Add a new task to current project",
+            f"    {render.color('addc', S.BRIGHT_CYAN)} {render.color('<n> <text>', S.DIM)}    Add a child task under task #n",
             f"    {render.color('toggle', S.BRIGHT_CYAN)} {render.color('<n>', S.DIM)}  /  {render.color('t', S.BRIGHT_CYAN)} {render.color('<n>', S.DIM)}  Toggle task checkbox",
             f"    {render.color('<n>', S.BRIGHT_CYAN)}                  Toggle task #n (shorthand)",
             f"    {render.color('check', S.BRIGHT_CYAN)} {render.color('<n>', S.DIM)}          Mark task as done",
@@ -276,7 +281,16 @@ class TodoShell:
             "",
             f"  {render.color('Projects', S.BOLD, S.BRIGHT_WHITE)}",
             f"    {render.color('new', S.BRIGHT_CYAN)} {render.color('<name>', S.DIM)}         Create a new project",
-            f"    {render.color('share', S.BRIGHT_CYAN)} {render.color('<project> <group>', S.DIM)}  Share a project with a group",
+            f"    {render.color('link', S.BRIGHT_CYAN)} {render.color('<project> [path]', S.DIM)}    Link TODO.md in directory",
+            f"    {render.color('unlink', S.BRIGHT_CYAN)} {render.color('<project> [path]', S.DIM)}  Unlink TODO.md from directory",
+            "",
+            f"  {render.color('Groups', S.BOLD, S.BRIGHT_WHITE)}",
+            f"    {render.color('group new', S.BRIGHT_CYAN)} {render.color('<name>', S.DIM)}       Create a new group",
+            f"    {render.color('group add', S.BRIGHT_CYAN)} {render.color('<project> <group>', S.DIM)}  Add project to group",
+            f"    {render.color('group sync', S.BRIGHT_CYAN)} {render.color('<group>', S.DIM)}     Setup sync for a group",
+            f"    {render.color('group invite', S.BRIGHT_CYAN)} {render.color('<group> <user>', S.DIM)}  Invite user to group",
+            f"    {render.color('group join', S.BRIGHT_CYAN)} {render.color('<group> <url>', S.DIM)}   Join a group via URL",
+            f"    {render.color('group list', S.BRIGHT_CYAN)}             List all groups",
             "",
             f"  {render.color('Sync', S.BOLD, S.BRIGHT_WHITE)}",
             f"    {render.color('setup', S.BRIGHT_CYAN)}               Setup multi-device sync",
@@ -285,7 +299,8 @@ class TodoShell:
             f"    {render.color('pull', S.BRIGHT_CYAN)}                Sync (pull changes)",
             "",
             f"  {render.color('Other', S.BOLD, S.BRIGHT_WHITE)}",
-            f"    {render.color('groups', S.BRIGHT_CYAN)}              List groups",
+            f"    {render.color('config', S.BRIGHT_CYAN)}              View/set configuration",
+            f"    {render.color('nuke', S.BRIGHT_CYAN)}                Delete all todo data",
             f"    {render.color('theme', S.BRIGHT_CYAN)} {render.color('[name]', S.DIM)}       View/switch UI theme",
             f"    {render.color('clear', S.BRIGHT_CYAN)}               Clear screen",
             f"    {render.color('q', S.BRIGHT_CYAN)} / {render.color('quit', S.BRIGHT_CYAN)} / {render.color('exit', S.BRIGHT_CYAN)}     Exit",
@@ -513,15 +528,189 @@ class TodoShell:
         self.current_project = name
         self._refresh_tasks()
 
-    def _cmd_share(self, args):
+    def _cmd_addc(self, args):
         if len(args) < 2:
-            print(render.error("Usage: share <project> <group>"))
+            print(render.error("Usage: addc <n> <task text>"))
+            return
+        try:
+            n = int(args[0])
+        except ValueError:
+            print(render.error(f"Expected a number, got: {args[0]}"))
+            return
+        parent = self._get_task(n)
+        if not parent:
+            return
+        text = " ".join(args[1:])
+        child_indent = parent.indent + "    "
+        add_task_to_file(parent.todo_path, text, indent=child_indent, after_line=parent.line_no)
+        self._propagate()
+        self._refresh_tasks()
+        print(render.success(f"Added under #{n}: {text}"))
+
+    def _cmd_group(self, args):
+        """Handle group sub-commands: new, add, sync, invite, join, list"""
+        if not args:
+            print(render.error("Usage: group <new|add|sync|invite|join|list> ..."))
             return
 
-        project = args[0]
-        group = args[1]
-        self.manager.share_project(project, group)
-        print(render.success(f"Shared '{project}' with group '{group}'"))
+        sub = args[0].lower()
+
+        if sub == 'new':
+            if len(args) < 2:
+                print(render.error("Usage: group new <name>"))
+                return
+            name = args[1]
+            try:
+                self.manager.create_group(name)
+                print(render.success(f"Created group: {name}"))
+            except ValueError as e:
+                print(render.error(str(e)))
+
+        elif sub == 'add':
+            if len(args) < 3:
+                print(render.error("Usage: group add <project> <group>"))
+                return
+            project_name, group_name = args[1], args[2]
+            try:
+                self.manager.add_project_to_group(project_name, group_name)
+                print(render.success(f"Added '{project_name}' to group '{group_name}'"))
+            except ValueError as e:
+                print(render.error(str(e)))
+
+        elif sub == 'sync':
+            if len(args) < 2:
+                print(render.error("Usage: group sync <group>"))
+                return
+            group_name = args[1]
+            registry = self.manager.load_registry()
+            if group_name not in registry.get("groups", {}):
+                print(render.error(f"Group '{group_name}' not found"))
+                return
+            existing_remote = registry["groups"][group_name].get("remote")
+            if existing_remote:
+                print(render.info(f"Group '{group_name}' already has remote: {existing_remote}"))
+                answer = self._prompt("  Reconfigure? [y/N]")
+                if answer.lower() != "y":
+                    return
+            self._cmd_setup(args[1:])
+
+        elif sub == 'invite':
+            if len(args) < 3:
+                print(render.error("Usage: group invite <group> <username>"))
+                return
+            group_name, username = args[1], args[2]
+            try:
+                print(render.dim(f"  Inviting '{username}' to '{group_name}'..."))
+                if self.manager.invite_to_group(group_name, username):
+                    print(render.success(f"Invited '{username}' as collaborator on '{group_name}'"))
+                else:
+                    print(render.error(f"Failed to invite '{username}'. Check the username and your permissions."))
+            except ValueError as e:
+                print(render.error(str(e)))
+
+        elif sub == 'join':
+            if len(args) < 3:
+                print(render.error("Usage: group join <group> <url>"))
+                return
+            group_name, remote_url = args[1], args[2]
+            try:
+                print(render.dim(f"  Joining group '{group_name}'..."))
+                if self.manager.join_group(group_name, remote_url):
+                    print(render.success(f"Joined group '{group_name}'"))
+                    self._refresh_tasks()
+                else:
+                    print(render.error(f"Failed to join '{group_name}'. Check the URL and your access."))
+            except ValueError as e:
+                print(render.error(str(e)))
+
+        elif sub == 'list':
+            registry = self.manager.load_registry()
+            groups = registry.get("groups", {})
+            if not groups:
+                print(render.dim("  No groups. Use 'group new <name>' to create one."))
+                return
+            print(render.header("Groups"))
+            for name, info in groups.items():
+                projects = info.get("projects", [])
+                pcount = len(projects)
+                has_remote = bool(info.get("remote"))
+                remote = info.get("remote") or "no remote"
+                sync_icon = render.color("🔗", S.GREEN) if has_remote else render.color("📝", S.DIM)
+                proj_str = ", ".join(projects) if projects else "empty"
+                print(f"  {sync_icon} {render.color(name, S.BOLD)} ({pcount} projects) [{proj_str}] ({remote})")
+            print()
+
+        else:
+            print(render.error(f"Unknown group command: {sub}"))
+            print(render.dim("  Usage: group <new|add|sync|invite|join|list>"))
+
+    def _cmd_config(self, args):
+        if not args:
+            print(render.header("Configuration"))
+            for key, value in self.manager.config.config.items():
+                display = value
+                if isinstance(value, str) and "token" in key.lower() and value:
+                    display = value[:4] + "****" + value[-4:] if len(value) > 8 else "****"
+                print(f"  {render.color(key, S.BRIGHT_CYAN)}: {display}")
+            print()
+            return
+        key = args[0]
+        if len(args) < 2:
+            value = self.manager.config.get(key)
+            if value is not None:
+                display = value
+                if isinstance(value, str) and "token" in key.lower() and value:
+                    display = value[:4] + "****" + value[-4:] if len(value) > 8 else "****"
+                print(f"  {render.color(key, S.BRIGHT_CYAN)}: {display}")
+            else:
+                print(render.dim(f"  {key} is not set"))
+            return
+        value_str = " ".join(args[1:])
+        if value_str.lower() == "true":
+            value_str = True
+        elif value_str.lower() == "false":
+            value_str = False
+        elif value_str.lower() == "null" or value_str.lower() == "none":
+            value_str = None
+        else:
+            try:
+                value_str = int(value_str)
+            except ValueError:
+                pass
+        self.manager.config.set(key, value_str)
+        print(render.success(f"Set {key} = {value_str}"))
+
+    def _cmd_nuke(self, args):
+        if self.manager.nuke_all():
+            print(render.success("All todo data has been deleted."))
+        else:
+            print(render.dim("  Cancelled."))
+
+    def _cmd_link(self, args):
+        if not args:
+            print(render.error("Usage: link <project> [path]"))
+            return
+        project_name = args[0]
+        target_dir = Path(args[1]) if len(args) > 1 else None
+        try:
+            symlink = self.manager.link_project(project_name, target_dir)
+            print(render.success(f"Linked: {symlink}"))
+        except ValueError as e:
+            print(render.error(str(e)))
+
+    def _cmd_unlink(self, args):
+        if not args:
+            print(render.error("Usage: unlink <project> [path]"))
+            return
+        project_name = args[0]
+        target_dir = Path(args[1]) if len(args) > 1 else None
+        try:
+            if self.manager.unlink_project(project_name, target_dir):
+                print(render.success(f"Unlinked TODO.md for '{project_name}'"))
+            else:
+                print(render.dim("  No symlink found to remove."))
+        except ValueError as e:
+            print(render.error(str(e)))
 
     def _cmd_setup(self, args):
         """Interactive sync setup wizard."""
@@ -719,22 +908,6 @@ class TodoShell:
         sync_result = self._do_sync_quiet()
         self._print_sync_result(sync_result)
         self._refresh_tasks()
-
-    def _cmd_groups(self, args):
-        registry = self.manager.load_registry()
-        groups = registry.get("groups", {})
-        if not groups:
-            print(render.dim("  No groups found"))
-            return
-
-        print(render.header("Groups"))
-        for name, info in groups.items():
-            projects = info.get("projects", [])
-            pcount = len(projects)
-            has_remote = bool(info.get("remote"))
-            sync_icon = render.color("🔗", S.GREEN) if has_remote else render.color("📝", S.DIM)
-            print(f"  {sync_icon} {render.color(name, S.BOLD)} ({pcount} projects)")
-        print()
 
     def _cmd_status(self, args):
         project_list = self.manager.list_projects()

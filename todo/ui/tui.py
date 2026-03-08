@@ -11,6 +11,7 @@ import curses
 import io
 import shlex
 import sys
+from pathlib import Path
 from typing import List, Optional
 
 from todo.core.manager import TodoManager
@@ -588,6 +589,8 @@ class TodoTUI:
             return "delete? (y/n) "
         if self.input_mode == 'confirm_quit':
             return "quit? (y/n) "
+        if self.input_mode == 'confirm_nuke':
+            return "nuke? type 'yes': "
         if self.input_mode == 'setup_provider':
             return "provider [1/2/3]: "
         if self.input_mode == 'setup_token':
@@ -828,6 +831,26 @@ class TodoTUI:
                 self._add_output("(cancelled)")
                 self._reset_input_mode()
                 self._full_render()
+            return
+
+        # Confirm nuke: user types 'yes' and presses Enter
+        if self.input_mode == 'confirm_nuke':
+            if key in (curses.KEY_ENTER, 10, 13):
+                if self.input_buffer.strip().lower() == 'yes':
+                    try:
+                        self.manager.nuke_all(force=True)
+                        self._add_output("✓ All todo data removed. Restart to start fresh.")
+                    except Exception as exc:
+                        self._add_output(f"✗ {exc}")
+                else:
+                    self._add_output("(cancelled)")
+                self._reset_input_mode()
+                self._full_render()
+                return
+            self._edit_input_buffer(key)
+            self._render_input_line()
+            self._position_cursor()
+            curses.doupdate()
             return
 
         # Pick project (for add) or use project: respond to Enter
@@ -1147,6 +1170,10 @@ class TodoTUI:
             'pull': self._cmd_pull,
             'status': self._cmd_status,
             'theme': self._cmd_theme,
+            'config': self._cmd_config,
+            'nuke': self._cmd_nuke,
+            'link': self._cmd_link,
+            'unlink': self._cmd_unlink,
             'clear': self._cmd_clear,
             'quit': self._cmd_quit,
             'q': self._cmd_quit,
@@ -1395,6 +1422,12 @@ class TodoTUI:
         self._add_output("Sync:")
         self._add_output("  setup           Setup multi-device sync")
         self._add_output("  sync            Sync now")
+        self._add_output("Config:")
+        self._add_output("  config          Show configuration")
+        self._add_output("  config k v      Set config key=value")
+        self._add_output("  link <proj> [p] Symlink TODO.md to project")
+        self._add_output("  unlink <proj>   Remove TODO.md symlink")
+        self._add_output("  nuke            Delete all todo data")
         self._add_output("Other:")
         self._add_output("  theme [name]    View/switch UI theme")
         self._add_output("  clear           Clear output")
@@ -2052,6 +2085,49 @@ class TodoTUI:
         else:
             self._add_output(f"✗ Unknown theme: {name}")
             self._add_output(f"  Available: {', '.join(list_themes())}")
+
+    def _cmd_config(self, args):
+        if not args:
+            self._add_output("Configuration:")
+            for k, v in self.manager.config.config.items():
+                if k in ('github_token', 'gitlab_token') and v:
+                    self._add_output(f"  {k}: ****")
+                else:
+                    self._add_output(f"  {k}: {v}")
+            return
+        if len(args) < 2:
+            self._add_output("✗ Usage: config <key> <value>")
+            return
+        key, value = args[0], ' '.join(args[1:])
+        self.manager.config.set(key, value)
+        self._add_output(f"✓ {key} = {value}")
+
+    def _cmd_nuke(self, args):
+        self._add_output("⚠ This will DELETE all todo data in ~/.todo/")
+        self._add_output("  Type 'yes' to confirm:")
+        self.input_mode = 'confirm_nuke'
+        self.input_buffer = ''
+        self.input_cursor = 0
+
+    def _cmd_link(self, args):
+        if not args:
+            self._add_output("✗ Usage: link <project> [path]")
+            return
+        project_name = args[0]
+        target_dir = Path(args[1]) if len(args) > 1 else None
+        result = self.manager.link_project(project_name, target_dir)
+        self._add_output(f"✓ Linked: {result}")
+
+    def _cmd_unlink(self, args):
+        if not args:
+            self._add_output("✗ Usage: unlink <project> [path]")
+            return
+        project_name = args[0]
+        target_dir = Path(args[1]) if len(args) > 1 else None
+        if self.manager.unlink_project(project_name, target_dir):
+            self._add_output(f"✓ Unlinked: {project_name}")
+        else:
+            self._add_output(f"✗ No symlink found for {project_name}")
 
     def _cmd_clear(self, args):
         self.output_lines.clear()
