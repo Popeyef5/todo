@@ -24,6 +24,7 @@ class TodoManager:
         self.data_dir = self.home_dir / "data"
         self.shared_dir = self.home_dir / "shared"
         self.cache_dir = self.home_dir / "cache"
+        self.themes_dir = self.home_dir / "themes"
         self.config = TodoConfig(self.config_file)
         self.conflict_manager = ConflictManager(self.cache_dir)
         self.ensure_structure()
@@ -34,6 +35,7 @@ class TodoManager:
         self.data_dir.mkdir(exist_ok=True)
         self.shared_dir.mkdir(exist_ok=True)
         self.cache_dir.mkdir(exist_ok=True)
+        self.themes_dir.mkdir(exist_ok=True)
 
         if not self.registry_file.exists():
             self.save_registry({"projects": {}, "groups": {}})

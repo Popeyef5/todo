@@ -23,7 +23,7 @@ from todo.ui.tasks import (
     TaskRef, parse_tasks_from_file, toggle_task_in_file,
     add_task_to_file, edit_task_in_file, remove_task_from_file,
 )
-from todo.ui.themes import get_theme, set_theme, list_themes
+from todo.ui.themes import get_theme, set_theme, list_themes, load_custom_themes
 
 
 @contextlib.contextmanager
@@ -55,7 +55,8 @@ class TodoShell:
         self.dirty = False
         self._bg_sync = None  # BackgroundSync instance
 
-        # Load saved theme
+        # Load custom themes from ~/.todo/themes/, then apply saved preference
+        load_custom_themes(manager.themes_dir)
         saved_theme = manager.config.get("theme")
         if saved_theme:
             set_theme(saved_theme)

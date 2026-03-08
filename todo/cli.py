@@ -117,7 +117,8 @@ def main():
                 print(f"Sync interval: {args.sync_interval}s")
                 changed = True
             if args.theme:
-                from todo.ui.themes import set_theme, list_themes
+                from todo.ui.themes import set_theme, list_themes, load_custom_themes
+                load_custom_themes(manager.themes_dir)
                 if set_theme(args.theme):
                     manager.config.set('theme', args.theme)
                     print(f"Theme: {args.theme}")

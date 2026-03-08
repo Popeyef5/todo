@@ -22,7 +22,10 @@ from todo.ui.tasks import (
     TaskRef, parse_tasks_from_file, toggle_task_in_file,
     add_task_to_file, edit_task_in_file, remove_task_from_file,
 )
-from todo.ui.themes import get_theme, set_theme, list_themes
+from todo.ui.themes import (
+    get_theme, set_theme, list_themes, load_custom_themes,
+    resolve_dynamic_vars, build_dynamic_context, MAX_BANNER_LINES,
+)
 
 CTRL_T = 20
 CTRL_F = 6
@@ -86,13 +89,12 @@ class TodoTUI:
 
         curses.start_color()
         curses.use_default_colors()
-        self._apply_theme_colors()
-
-        # Load theme from config
+        # Load custom themes from ~/.todo/themes/, then apply saved preference
+        load_custom_themes(self.manager.themes_dir)
         saved_theme = self.manager.config.get("theme")
         if saved_theme:
             set_theme(saved_theme)
-            self._apply_theme_colors()
+        self._apply_theme_colors()
 
         # Initial scope
         if self._initial_target:
@@ -118,8 +120,11 @@ class TodoTUI:
                 return
 
             if key == -1:
-                # Timeout — check for background sync
+                # Timeout — check for background sync and refresh dynamic content
                 self._check_pending_sync()
+                self._render_mid_banner()
+                self._render_top_banner()
+                curses.doupdate()
                 continue
 
             if key == curses.KEY_RESIZE:
@@ -152,22 +157,42 @@ class TodoTUI:
 
     def _create_windows(self):
         h, w = self.stdscr.getmaxyx()
+        theme = get_theme()
+
+        # Calculate banner heights (capped at MAX_BANNER_LINES)
+        self.top_banner_h = min(len(theme.tui_banner_top), MAX_BANNER_LINES) if theme.tui_banner_top else 0
+        self.mid_banner_h = min(len(theme.tui_banner_mid), MAX_BANNER_LINES) if theme.tui_banner_mid else 0
+
+        # Terminal panel chrome: top border + bottom border + optional separator
+        has_sep = bool(theme.input_separator) and not self.fullscreen
+        term_chrome = 2 + (1 if has_sep else 0)  # top/bottom border + separator
+
+        # Fixed vertical space: banners + status bar(1) + terminal chrome + input line(1)
+        fixed = self.top_banner_h + self.mid_banner_h + 1 + term_chrome + 1
+        remaining = max(h - fixed, 4)  # at least 4 rows for panels
 
         if self.fullscreen:
-            # Task panel takes everything except status bar + input line
-            self.task_h = max(h - 2, 3)
+            self.task_h = max(remaining, 3)
             self.output_h = 0
         else:
-            self.task_h = max(h // 2, 3)
-            self.output_h = max(h - self.task_h - 2, 1)
+            self.task_h = max(remaining // 2, 3)
+            self.output_h = max(remaining - self.task_h, 1)
 
-        self.status_y = self.task_h
-        self.output_y = self.task_h + 1
-        self.input_y = h - 1
+        # Row positions (top to bottom)
+        self.top_banner_y = 0
+        self.task_y = self.top_banner_h
+        self.mid_banner_y = self.task_y + self.task_h
+        self.status_y = self.mid_banner_y + self.mid_banner_h
+        self.term_top_y = self.status_y + 1           # terminal top border
+        self.output_y = self.term_top_y + 1            # output content start
+        self.sep_y = self.output_y + self.output_h if has_sep else None
+        self.input_y = (self.sep_y + 1) if has_sep else (self.output_y + self.output_h)
+        self.term_bottom_y = self.input_y + 1          # terminal bottom border
+
         self.width = w
         self.height = h
 
-        self.task_win = curses.newwin(self.task_h, w, 0, 0)
+        self.task_win = curses.newwin(self.task_h, w, self.task_y, 0)
         self.task_win.keypad(True)
         if self.output_h > 0:
             self.output_win = curses.newwin(self.output_h, w, self.output_y, 0)
@@ -177,13 +202,108 @@ class TodoTUI:
 
     # ── Rendering ─────────────────────────────────────────────────────
 
+    def _build_context(self) -> dict:
+        """Build the dynamic variable context for banner rendering."""
+        pending = sum(1 for t in self.tasks if not t.checked)
+        done = sum(1 for t in self.tasks if t.checked)
+        return build_dynamic_context(
+            project=self.current_project or "all",
+            tasks_pending=pending,
+            tasks_done=done,
+            tasks_total=len(self.tasks),
+        )
+
     def _full_render(self):
+        self._render_top_banner()
         self._render_task_panel()
+        self._render_mid_banner()
         self._render_status_bar()
+        self._render_term_border_top()
         self._render_output_panel()
+        self._render_input_separator()
         self._render_input_line()
+        self._render_term_border_bottom()
         self._position_cursor()
         curses.doupdate()
+
+    def _render_banner(self, lines: List[str], start_y: int, count: int):
+        """Render centered banner lines on stdscr."""
+        if count <= 0:
+            return
+        import re
+        w = self.width
+        ctx = self._build_context()
+        for i, line in enumerate(lines[:count]):
+            y = start_y + i
+            if y >= self.height:
+                break
+            resolved = resolve_dynamic_vars(line, ctx)
+            # Strip ANSI codes — curses uses color pairs, not escape sequences
+            clean = re.sub(r'\033\[[0-9;]*m', '', resolved)
+            pad = max(w - len(clean), 0)
+            left_pad = pad // 2
+            centered = " " * left_pad + clean + " " * (pad - left_pad)
+            try:
+                self.stdscr.addnstr(y, 0, centered, w - 1, curses.color_pair(1))
+            except curses.error:
+                pass
+        self.stdscr.noutrefresh()
+
+    def _render_top_banner(self):
+        self._render_banner(get_theme().tui_banner_top, self.top_banner_y, self.top_banner_h)
+
+    def _render_mid_banner(self):
+        self._render_banner(get_theme().tui_banner_mid, self.mid_banner_y, self.mid_banner_h)
+
+    def _render_term_border_top(self):
+        """Draw the terminal panel top border on stdscr."""
+        theme = get_theme()
+        w = self.width
+        y = self.term_top_y
+        if y >= self.height:
+            return
+        border = theme.border_top_left + theme.border_h * max(w - 2, 0)
+        try:
+            self.stdscr.addnstr(y, 0, border, w - 1, curses.color_pair(1))
+            self.stdscr.insstr(y, w - 1, theme.border_top_right, curses.color_pair(1))
+        except curses.error:
+            pass
+        self.stdscr.noutrefresh()
+
+    def _render_term_border_bottom(self):
+        """Draw the terminal panel bottom border on stdscr."""
+        theme = get_theme()
+        w = self.width
+        y = self.term_bottom_y
+        if y >= self.height:
+            return
+        border = theme.border_bottom_left + theme.border_h * max(w - 2, 0)
+        try:
+            self.stdscr.addnstr(y, 0, border, w - 1, curses.color_pair(1))
+            self.stdscr.insstr(y, w - 1, theme.border_bottom_right, curses.color_pair(1))
+        except curses.error:
+            pass
+        self.stdscr.noutrefresh()
+
+    def _render_input_separator(self):
+        """Draw the separator line between output and input inside the terminal box."""
+        theme = get_theme()
+        if not theme.input_separator or self.sep_y is None or self.fullscreen:
+            return
+        w = self.width
+        if self.sep_y >= self.height:
+            return
+        if theme.tui_bordered:
+            sep = theme.border_tee_left + theme.input_separator * max(w - 2, 0)
+        else:
+            sep = theme.input_separator * w
+        try:
+            self.stdscr.addnstr(self.sep_y, 0, sep, w - 1, curses.color_pair(1))
+            if theme.tui_bordered:
+                self.stdscr.insstr(self.sep_y, w - 1, theme.border_tee_right, curses.color_pair(1))
+        except curses.error:
+            pass
+        self.stdscr.noutrefresh()
 
     def _render_task_panel(self):
         win = self.task_win
@@ -197,12 +317,21 @@ class TodoTUI:
         title = f" {scope} — {unchecked} pending, {checked} done "
 
         theme = get_theme()
+        bordered = theme.tui_bordered
+        # Content area: if bordered, cols 1..w-2; otherwise 0..w-1
+        cx = 1 if bordered else 0
+        cw = w - 2 if bordered else w
+
         try:
             win.addstr(0, 0, theme.border_top_left, curses.color_pair(1))
-            win.addstr(0, 1, title, curses.color_pair(1) | curses.A_BOLD)
-            remaining = w - 2 - len(title)
-            if remaining > 0:
-                win.addnstr(0, 1 + len(title), theme.border_h * remaining, remaining, curses.color_pair(1))
+            title_avail = w - 2
+            win.addnstr(0, 1, title, title_avail, curses.color_pair(1) | curses.A_BOLD)
+            fill_start = 1 + min(len(title), title_avail)
+            fill_len = w - 2 - fill_start + 1
+            if fill_len > 0:
+                win.addnstr(0, fill_start, theme.border_h * fill_len, fill_len, curses.color_pair(1))
+            if bordered and w >= 2:
+                win.insstr(0, w - 1, theme.border_top_right, curses.color_pair(1))
         except curses.error:
             pass
 
@@ -263,14 +392,18 @@ class TodoTUI:
                 project_name = value
                 is_collapsed = project_name in self.collapsed_projects
                 collapse_icon = theme.collapse_closed if is_collapsed else theme.collapse_open
-                label = f"  {collapse_icon} {project_name}"
+                label = f" {collapse_icon} {project_name}"
                 try:
+                    if bordered:
+                        win.addstr(row, 0, theme.border_v, curses.color_pair(1))
                     if is_highlighted:
-                        win.addnstr(row, 0, label.ljust(w - 1), w - 1,
+                        win.addnstr(row, cx, label.ljust(cw), cw,
                                     curses.color_pair(7) | curses.A_BOLD)
                     else:
-                        win.addnstr(row, 0, label, w - 1,
+                        win.addnstr(row, cx, label, cw,
                                     curses.color_pair(5) | curses.A_BOLD)
+                    if bordered and w >= 2:
+                        win.insstr(row, w - 1, theme.border_v, curses.color_pair(1))
                 except curses.error:
                     pass
                 row += 1
@@ -281,33 +414,46 @@ class TodoTUI:
                 checkbox = theme.checkbox_checked if task.checked else theme.checkbox_unchecked
                 depth = len(task.indent) // 4
                 indent_visual = "  " * depth
-                line_text = f"  {idx_str} {indent_visual}{checkbox} {task.text}"
+                line_text = f" {idx_str} {indent_visual}{checkbox} {task.text}"
 
-                if len(line_text) >= w:
-                    line_text = line_text[:w - 2] + "…"
+                if len(line_text) >= cw:
+                    line_text = line_text[:cw - 1] + "…"
 
                 try:
+                    if bordered:
+                        win.addstr(row, 0, theme.border_v, curses.color_pair(1))
                     if is_highlighted:
-                        win.addnstr(row, 0, line_text.ljust(w - 1), w - 1,
+                        win.addnstr(row, cx, line_text.ljust(cw), cw,
                                     curses.color_pair(7) | curses.A_BOLD)
                     elif task.checked:
-                        win.addnstr(row, 0, line_text, w - 1, curses.A_DIM)
+                        win.addnstr(row, cx, line_text.ljust(cw), cw, curses.A_DIM)
                     else:
-                        prefix = f"  {idx_str} {indent_visual}"
-                        win.addstr(row, 0, prefix, curses.A_DIM)
+                        prefix = f" {idx_str} {indent_visual}"
+                        win.addstr(row, cx, prefix, curses.A_DIM)
                         cb_attr = curses.color_pair(3)
-                        win.addstr(row, len(prefix), checkbox, cb_attr)
-                        text_col = len(prefix) + len(checkbox) + 1
-                        avail = w - text_col - 1
+                        win.addstr(row, cx + len(prefix), checkbox, cb_attr)
+                        text_col = cx + len(prefix) + len(checkbox) + 1
+                        avail = w - text_col - (1 if bordered else 0) - 1
                         if avail > 0:
                             win.addnstr(row, text_col, task.text, avail)
+                    if bordered and w >= 2:
+                        win.insstr(row, w - 1, theme.border_v, curses.color_pair(1))
                 except curses.error:
                     pass
                 row += 1
 
+        # Draw side borders on empty rows
+        if bordered:
+            for r in range(row, h - 1):
+                try:
+                    win.addstr(r, 0, theme.border_v, curses.color_pair(1))
+                    win.insstr(r, w - 1, theme.border_v, curses.color_pair(1))
+                except curses.error:
+                    pass
+
         if not self.nav_items and 1 < h - 1:
             try:
-                win.addnstr(1, 2, "No tasks found", w - 3, curses.A_DIM)
+                win.addnstr(1, cx + 1, "No tasks found", cw - 2, curses.A_DIM)
             except curses.error:
                 pass
 
@@ -315,6 +461,7 @@ class TodoTUI:
         try:
             bottom = theme.border_bottom_left + theme.border_h * max(w - 2, 0)
             win.addnstr(h - 1, 0, bottom, w - 1, curses.color_pair(1))
+            win.insstr(h - 1, w - 1, theme.border_bottom_right, curses.color_pair(1))
         except curses.error:
             pass
 
@@ -322,6 +469,8 @@ class TodoTUI:
 
     def _render_status_bar(self):
         h, w = self.stdscr.getmaxyx()
+        theme = get_theme()
+        sep = theme.border_v
         mode_label = " MODAL " if self.mode == 'modal' else " REPL "
         if self.fullscreen:
             mode_label += "⛶ "
@@ -332,7 +481,7 @@ class TodoTUI:
         else:
             hint = " Ctrl+T: switch mode  Ctrl+F: fullscreen"
 
-        bar = f"{mode_label}│{project_label} │{hint}"
+        bar = f"{mode_label}{sep}{project_label} {sep}{hint}"
         bar = bar.ljust(w - 1)
 
         try:
@@ -352,24 +501,47 @@ class TodoTUI:
             win.noutrefresh()
             return
 
+        theme = get_theme()
+        bordered = theme.tui_bordered
+        cx = 1 if bordered else 0
+        cw = w - 2 if bordered else w
+
         visible = self.output_lines[-h:]
         for i, line in enumerate(visible):
-            display = line[:w - 1] if len(line) >= w else line
+            display = line[:cw - 1] if len(line) >= cw else line
             try:
-                if line.startswith("✓"):
-                    win.addnstr(i, 0, display, w - 1, curses.color_pair(2))
-                elif line.startswith("✗"):
-                    win.addnstr(i, 0, display, w - 1, curses.color_pair(4))
+                if bordered:
+                    win.addstr(i, 0, theme.border_v, curses.color_pair(1))
+                if line.startswith("✓") or line.startswith("»"):
+                    win.addnstr(i, cx, display, cw, curses.color_pair(2))
+                elif line.startswith("✗") or line.startswith("×"):
+                    win.addnstr(i, cx, display, cw, curses.color_pair(4))
                 else:
-                    win.addnstr(i, 0, display, w - 1)
+                    win.addnstr(i, cx, display, cw)
+                if bordered and w >= 2:
+                    win.insstr(i, w - 1, theme.border_v, curses.color_pair(1))
             except curses.error:
                 pass
+
+        # Side borders on empty rows
+        if bordered:
+            for r in range(len(visible), h):
+                try:
+                    win.addstr(r, 0, theme.border_v, curses.color_pair(1))
+                    win.insstr(r, w - 1, theme.border_v, curses.color_pair(1))
+                except curses.error:
+                    pass
 
         win.noutrefresh()
 
     def _render_input_line(self):
         h, w = self.stdscr.getmaxyx()
         y = self.input_y
+        if y >= h:
+            return
+
+        theme = get_theme()
+        bordered = theme.tui_bordered
 
         try:
             self.stdscr.move(y, 0)
@@ -377,13 +549,18 @@ class TodoTUI:
         except curses.error:
             pass
 
+        cx = 1 if bordered else 0
         prompt = self._get_prompt()
 
         try:
-            self.stdscr.addnstr(y, 0, prompt, w - 1, curses.color_pair(1))
-            avail = w - len(prompt) - 1
+            if bordered:
+                self.stdscr.addstr(y, 0, theme.border_v, curses.color_pair(1))
+            self.stdscr.addnstr(y, cx, prompt, w - cx - 1, curses.color_pair(1))
+            avail = w - cx - len(prompt) - (1 if bordered else 0) - 1
             if avail > 0:
-                self.stdscr.addnstr(y, len(prompt), self.input_buffer[:avail], avail)
+                self.stdscr.addnstr(y, cx + len(prompt), self.input_buffer[:avail], avail)
+            if bordered and w >= 2:
+                self.stdscr.insstr(y, w - 1, theme.border_v, curses.color_pair(1))
         except curses.error:
             pass
 
@@ -420,8 +597,9 @@ class TodoTUI:
 
     def _position_cursor(self):
         if self.mode == 'repl' or self.input_mode:
+            cx = 1 if get_theme().tui_bordered else 0
             prompt_len = len(self._get_prompt())
-            cursor_x = min(prompt_len + self.input_cursor, self.width - 1)
+            cursor_x = min(cx + prompt_len + self.input_cursor, self.width - 1)
             try:
                 curses.curs_set(1)
                 self.stdscr.move(self.input_y, cursor_x)
@@ -1857,6 +2035,10 @@ class TodoTUI:
             self._apply_theme_colors()
             self.manager.config.set("theme", name)
             self._add_output(f"✓ Theme set to '{name}'")
+            # Rebuild layout since banners/borders may have changed
+            self.stdscr.clear()
+            self.stdscr.refresh()
+            self._create_windows()
         else:
             self._add_output(f"✗ Unknown theme: {name}")
             self._add_output(f"  Available: {', '.join(list_themes())}")

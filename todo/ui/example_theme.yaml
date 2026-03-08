@@ -1,0 +1,124 @@
+# ──────────────────────────────────────────────────────────────────────
+# Example custom theme for todo
+# ──────────────────────────────────────────────────────────────────────
+#
+# Save this file (or your own version) in:  ~/.todo/themes/<name>.yaml
+# Then switch to it with:                   theme <name>
+#
+# The theme will sync across machines automatically since ~/.todo/ is
+# a git-synced directory.
+#
+# Install PyYAML if you haven't already:    pip install pyyaml
+#
+# All fields are optional — omitted fields use the modern theme defaults.
+# ──────────────────────────────────────────────────────────────────────
+
+name: nasa
+
+# ── Colors ────────────────────────────────────────────────────────────
+# Available color names:
+#   black, red, green, yellow, blue, magenta, cyan, white, gray
+#   bright_red, bright_green, bright_yellow, bright_blue,
+#   bright_magenta, bright_cyan, bright_white
+#
+# Modifiers (combine with +):
+#   bold, dim, italic
+#
+# Examples:
+#   accent: bright_blue
+#   accent_bold: bold+bright_blue
+#   dim: dim
+#   text: none            (no color — uses terminal default)
+
+colors:
+  accent: bright_blue
+  accent_bold: bold+bright_blue
+  success: bright_green
+  warning: bright_yellow
+  error: bright_red
+  info: bright_blue
+  text: white
+  text_bold: bold+bright_white
+  dim: dim
+  header: bold+bright_blue
+
+# ── Curses (TUI mode) ────────────────────────────────────────────────
+# Color pairs for the curses-based split-pane TUI.
+# Each pair is [foreground, background].
+# Available: black, red, green, yellow, blue, magenta, cyan, white, default
+# Use 'default' for the terminal's default background.
+
+curses:
+  accent:     [blue, default]
+  success:    [green, default]
+  warning:    [yellow, default]
+  error:      [red, default]
+  header:     [blue, default]
+  status_bar: [white, blue]
+  highlight:  [white, blue]
+  text:       [white, default]
+
+# ── Visual elements ──────────────────────────────────────────────────
+# Box drawing, icons, checkboxes, and prompt style.
+
+elements:
+  border_top_left: "╔"
+  border_top_right: "╗"
+  border_bottom_left: "╚"
+  border_bottom_right: "╝"
+  border_h: "═"
+  border_v: "║"
+  border_tee_left: "╠"
+  border_tee_right: "╣"
+
+  icon_success: "✓"
+  icon_error: "✗"
+  icon_warning: "⚠"
+  icon_info: "ℹ"
+
+  checkbox_checked: "[■]"
+  checkbox_unchecked: "[□]"
+
+  tree_branch: "├──"
+  tree_last: "└──"
+
+  collapse_open: "▾"
+  collapse_closed: "▸"
+
+  prompt_prefix: "mcc"
+  prompt_arrow: "://"
+
+  divider_char: "═"
+
+# ── TUI layout ───────────────────────────────────────────────────────
+# tui_bordered: true/false — full borders around task & terminal panels
+# input_separator: character for line between output and input ("none" to disable)
+
+tui_bordered: true
+input_separator: "═"
+
+# ── TUI banners ──────────────────────────────────────────────────────
+# Optional ASCII art (max 6 lines each), auto-centered in the terminal.
+# Use {color_name} for colors and {variable} for dynamic values:
+#   Colors: {bold}, {dim}, {reset}, {bright_blue}, {bright_cyan}, etc.
+#   Dynamic: {time}, {time_short}, {date}, {hostname}, {user},
+#            {project}, {tasks_pending}, {tasks_done}, {tasks_total}
+
+tui_banner_top:
+  - "{bold}{bright_blue}╔══════════════════════════════════╗{reset}"
+  - "{bold}{bright_blue}║{reset}    {bold}{bright_white}M I S S I O N  C O N T R O L{reset}    {bold}{bright_blue}║{reset}"
+  - "{bold}{bright_blue}╚══════════════════════════════════╝{reset}"
+
+tui_banner_mid:
+  - "{dim}── {time_short} ── {hostname} ── {tasks_pending} pending ──{reset}"
+
+# ── REPL banner ──────────────────────────────────────────────────────
+# Shown in fallback REPL mode (non-curses). Same placeholder support.
+
+banner:
+  - ""
+  - "  {bold}{bright_blue}╔══ MISSION CONTROL ══╗{reset}"
+  - "  {bold}{bright_blue}║{reset}  {bold}{bright_white}todo{reset} {dim}task system{reset}  {bold}{bright_blue}║{reset}"
+  - "  {bold}{bright_blue}╚═════════════════════╝{reset}"
+  - "  {dim}Type {reset}{bright_white}help{reset}{dim} for commands, {reset}{bright_white}q{reset}{dim} to quit{reset}"
+  - ""
