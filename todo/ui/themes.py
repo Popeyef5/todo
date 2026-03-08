@@ -149,8 +149,10 @@ class Theme:
     banner_lines: List[str] = field(default_factory=list)
 
     # ── TUI layout ────────────────────────────────────────────────────
-    tui_banner_top: List[str] = field(default_factory=list)   # max 6 lines, centered
-    tui_banner_mid: List[str] = field(default_factory=list)   # max 6 lines, centered
+    tui_banner_top: List[str] = field(default_factory=list)   # max 14 lines
+    tui_banner_top_align: str = "center"                       # "left", "center", "right"
+    tui_banner_mid: List[str] = field(default_factory=list)   # max 14 lines
+    tui_banner_mid_align: str = "center"                       # "left", "center", "right"
     tui_bordered: bool = True                                  # full borders on panels
     input_separator: str = ""                                  # char between output/input, "" = off
     border_tee_left: str = "├"       # left T-junction for separator
@@ -413,7 +415,7 @@ def list_themes() -> list:
 # YAML custom theme loader
 # ═══════════════════════════════════════════════════════════════════════
 
-MAX_BANNER_LINES = 6
+MAX_BANNER_LINES = 14
 
 
 def resolve_dynamic_vars(text: str, context: dict) -> str:
@@ -584,18 +586,22 @@ def load_theme_from_yaml(path: Path) -> Optional[Theme]:
     if input_separator.lower() == "none":
         input_separator = ""
 
-    # Tee junctions (for input separator line)
-    if "border_tee_left" in elements_section:
-        pass  # already in elements dict
-    if "border_tee_right" in elements_section:
-        pass  # already in elements dict
+    # Banner alignment
+    tui_banner_top_align = str(data.get("tui_banner_top_align", "center")).lower()
+    if tui_banner_top_align not in ("left", "center", "right"):
+        tui_banner_top_align = "center"
+    tui_banner_mid_align = str(data.get("tui_banner_mid_align", "center")).lower()
+    if tui_banner_mid_align not in ("left", "center", "right"):
+        tui_banner_mid_align = "center"
 
     return Theme(
         name=name,
         curses_pairs=curses_pairs,
         banner_lines=banner_lines,
         tui_banner_top=tui_banner_top,
+        tui_banner_top_align=tui_banner_top_align,
         tui_banner_mid=tui_banner_mid,
+        tui_banner_mid_align=tui_banner_mid_align,
         tui_bordered=tui_bordered,
         input_separator=input_separator,
         **colors,

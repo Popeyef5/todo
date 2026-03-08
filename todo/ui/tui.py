@@ -226,8 +226,9 @@ class TodoTUI:
         self._position_cursor()
         curses.doupdate()
 
-    def _render_banner(self, lines: List[str], start_y: int, count: int):
-        """Render centered banner lines on stdscr."""
+    def _render_banner(self, lines: List[str], start_y: int, count: int,
+                       align: str = "center"):
+        """Render banner lines on stdscr with the given alignment."""
         if count <= 0:
             return
         import re
@@ -241,19 +242,28 @@ class TodoTUI:
             # Strip ANSI codes — curses uses color pairs, not escape sequences
             clean = re.sub(r'\033\[[0-9;]*m', '', resolved)
             pad = max(w - len(clean), 0)
-            left_pad = pad // 2
-            centered = " " * left_pad + clean + " " * (pad - left_pad)
+            if align == "left":
+                aligned = clean + " " * pad
+            elif align == "right":
+                aligned = " " * pad + clean
+            else:
+                left_pad = pad // 2
+                aligned = " " * left_pad + clean + " " * (pad - left_pad)
             try:
-                self.stdscr.addnstr(y, 0, centered, w - 1, curses.color_pair(1))
+                self.stdscr.addnstr(y, 0, aligned, w - 1, curses.color_pair(1))
             except curses.error:
                 pass
         self.stdscr.noutrefresh()
 
     def _render_top_banner(self):
-        self._render_banner(get_theme().tui_banner_top, self.top_banner_y, self.top_banner_h)
+        theme = get_theme()
+        self._render_banner(theme.tui_banner_top, self.top_banner_y, self.top_banner_h,
+                            theme.tui_banner_top_align)
 
     def _render_mid_banner(self):
-        self._render_banner(get_theme().tui_banner_mid, self.mid_banner_y, self.mid_banner_h)
+        theme = get_theme()
+        self._render_banner(theme.tui_banner_mid, self.mid_banner_y, self.mid_banner_h,
+                            theme.tui_banner_mid_align)
 
     def _render_term_border_top(self):
         """Draw the terminal panel top border on stdscr."""

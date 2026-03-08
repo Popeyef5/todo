@@ -5,6 +5,9 @@ setup(
     version="1.0.0",
     packages=find_packages(),
     install_requires=[],
+    extras_require={
+        "themes": ["pyyaml"],
+    },
     entry_points={
         'console_scripts': [
             'todo=todo.cli:main',

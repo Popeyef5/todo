@@ -98,19 +98,31 @@ tui_bordered: true
 input_separator: "═"
 
 # ── TUI banners ──────────────────────────────────────────────────────
-# Optional ASCII art (max 6 lines each), auto-centered in the terminal.
+# Optional ASCII art (max 14 lines for top, 6 for mid), auto-centered by default.
 # Use {color_name} for colors and {variable} for dynamic values:
 #   Colors: {bold}, {dim}, {reset}, {bright_blue}, {bright_cyan}, etc.
 #   Dynamic: {time}, {time_short}, {date}, {hostname}, {user},
 #            {project}, {tasks_pending}, {tasks_done}, {tasks_total}
 
+# tui_banner_top_align: center   # "left", "center", or "right" (default: center)
+# tui_banner_mid_align: center   # "left", "center", or "right" (default: center)
+
 tui_banner_top:
-  - "{bold}{bright_blue}╔══════════════════════════════════╗{reset}"
-  - "{bold}{bright_blue}║{reset}    {bold}{bright_white}M I S S I O N  C O N T R O L{reset}    {bold}{bright_blue}║{reset}"
-  - "{bold}{bright_blue}╚══════════════════════════════════╝{reset}"
+  - ""
+  - "{bold}{bright_blue}       :######.    +##*.   :#####-    .=##########:    -####*.{reset}"
+  - "{bold}{bright_blue}       ###*+###.   +##*.  :###*###-  :############-   -#######.{reset}"
+  - "{bold}{bright_blue}       ###- =##*   +###. .###+.=###. *##=.           .###- *##*.{reset}"
+  - "{bold}{bright_blue}       ###- .###.  =###. =###. .*##* -###*******:   .####. .###-{reset}"
+  - "{bold}{bright_blue}       ###-  -###  =###.:###:   .###- :###########- :###:   -###.{reset}"
+  - "{bold}{bright_blue}       ###-  .###: =###.*##*     =###.         -###.###=    .*###.{reset}"
+  - "{bold}{bright_blue}       ###-   :###:*###=###.     .*###=======-=####+###.     .##%:{reset}"
+  - "{bold}{bright_blue}       ###-   .=######-###=       .##############*:###:       -#%%.{reset}"
+  - ""
 
 tui_banner_mid:
-  - "{dim}── {time_short} ── {hostname} ── {tasks_pending} pending ──{reset}"
+  - ""
+  - "{dim}── {time_short} ── {tasks_pending} pending ──{reset}"
+  - ""
 
 # ── REPL banner ──────────────────────────────────────────────────────
 # Shown in fallback REPL mode (non-curses). Same placeholder support.
