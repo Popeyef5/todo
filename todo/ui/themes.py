@@ -379,6 +379,7 @@ THEMES = {
     "modern": modern_theme,
     "cyber": cyber_theme,
     "minimal": minimal_theme,
+
 }
 
 DEFAULT_THEME = "modern"
