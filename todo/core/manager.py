@@ -1,3 +1,4 @@
+import os
 import subprocess
 import shutil
 import json
@@ -507,6 +508,47 @@ class TodoManager:
         if result:
             self.reconstitute_groups()
         return result
+
+    # ── Link / Unlink ─────────────────────────────────────────
+
+    def link_project(self, project_name: str, target_dir: Path = None) -> Path:
+        """Create a TODO.md symlink in target_dir pointing to the project's .todo file."""
+        registry = self.load_registry()
+        if project_name not in registry["projects"]:
+            raise ValueError(f"Project '{project_name}' not found")
+
+        if target_dir is None:
+            target_dir = Path.cwd()
+
+        todo_path = self.data_dir / f"{project_name}.todo"
+        symlink_path = target_dir / "TODO.md"
+
+        if symlink_path.exists() or symlink_path.is_symlink():
+            raise ValueError(f"TODO.md already exists in {target_dir}")
+
+        os.symlink(todo_path, symlink_path)
+        return symlink_path
+
+    def unlink_project(self, project_name: str, target_dir: Path = None) -> bool:
+        """Remove a TODO.md symlink from target_dir if it points to the right .todo file."""
+        if target_dir is None:
+            target_dir = Path.cwd()
+
+        symlink_path = target_dir / "TODO.md"
+
+        if not symlink_path.is_symlink():
+            if symlink_path.exists():
+                raise ValueError("TODO.md exists but is not a symlink")
+            return False
+
+        target = Path(os.readlink(symlink_path))
+        expected = self.data_dir / f"{project_name}.todo"
+
+        if target.resolve() != expected.resolve():
+            raise ValueError(f"TODO.md points to {target}, not {expected}")
+
+        symlink_path.unlink()
+        return True
 
     # ── Nuke ──────────────────────────────────────────────────
 

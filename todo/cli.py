@@ -19,7 +19,8 @@ def main():
 
     known_commands = {
         'create', 'add', 'config', 'nuke',
-        'sync', 'share', '--help', '-h',
+        'sync', 'share', 'link', 'unlink',
+        'mcp', '--help', '-h',
     }
 
     # Unknown subcommand → interactive mode scoped to target
@@ -62,6 +63,19 @@ def main():
     sync_subparsers.add_parser('now', help='Sync now')
     sync_clone = sync_subparsers.add_parser('clone', help='Clone from remote')
     sync_clone.add_argument('remote_url', help='Git remote URL')
+
+    # link
+    link_parser = subparsers.add_parser('link', help='Create TODO.md symlink to a project')
+    link_parser.add_argument('project', help='Project name')
+    link_parser.add_argument('--path', help='Target directory (default: current dir)')
+
+    # unlink
+    unlink_parser = subparsers.add_parser('unlink', help='Remove TODO.md symlink')
+    unlink_parser.add_argument('project', help='Project name')
+    unlink_parser.add_argument('--path', help='Target directory (default: current dir)')
+
+    # mcp
+    subparsers.add_parser('mcp', help='Start MCP server (stdio transport)')
 
     # share
     share_parser = subparsers.add_parser('share', help='Share operations')
@@ -154,6 +168,24 @@ def main():
                         print(f"  ⚠ {c}")
                 else:
                     print("Synced")
+
+        elif args.command == 'link':
+            from pathlib import Path
+            target_dir = Path(args.path) if args.path else None
+            symlink = manager.link_project(args.project, target_dir)
+            print(f"Linked {args.project} → {symlink}")
+
+        elif args.command == 'unlink':
+            from pathlib import Path
+            target_dir = Path(args.path) if args.path else None
+            if manager.unlink_project(args.project, target_dir):
+                print(f"Unlinked {args.project}")
+            else:
+                print("No TODO.md symlink found")
+
+        elif args.command == 'mcp':
+            from todo.mcp.server import run_server
+            run_server()
 
         elif args.command == 'share':
             if args.share_action == 'join':
