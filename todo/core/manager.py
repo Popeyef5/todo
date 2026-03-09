@@ -156,25 +156,50 @@ class TodoManager:
         return projects
 
     def remove_project(self, name: str) -> bool:
-        """Remove a project file and its registry entry"""
+        """Remove a project file/directory and its registry entry.
+
+        If the project is a flat file (data/<name>.todo), delete it.
+        If it's a directory (data/<name>/ with index.todo), delete the entire
+        directory tree.  Afterward, prune empty ancestor directories up to
+        data/.
+        """
         registry = self.load_registry()
         if name not in registry["projects"]:
             return False
 
-        todo_path = self.get_project_path(name)
-        if todo_path.exists():
-            todo_path.unlink()
+        # Delete file or directory
+        project_dir = self.data_dir / name
+        flat_file = self.data_dir / f"{name}.todo"
+        if project_dir.is_dir():
+            shutil.rmtree(project_dir)
+        elif flat_file.exists():
+            flat_file.unlink()
+
+        # Clean up empty ancestor directories up to data/
+        parent = (self.data_dir / name).parent
+        while parent != self.data_dir:
+            try:
+                parent.rmdir()  # only removes if empty
+            except OSError:
+                break
+            parent = parent.parent
+
+        # Collect this project and all descendant subprojects
+        prefix = name + "/"
+        to_remove = [n for n in registry["projects"] if n == name or n.startswith(prefix)]
 
         # Remove from any shared groups
-        for group_name in list(registry["projects"][name].get("shared_in", [])):
-            group_info = registry["groups"].get(group_name)
-            if group_info and name in group_info["projects"]:
-                group_info["projects"].remove(name)
-                shared_file = self.shared_dir / group_name / f"{name}.todo"
-                if shared_file.exists():
-                    shared_file.unlink()
+        for proj_name in to_remove:
+            for group_name in list(registry["projects"][proj_name].get("shared_in", [])):
+                group_info = registry["groups"].get(group_name)
+                if group_info and proj_name in group_info["projects"]:
+                    group_info["projects"].remove(proj_name)
+                    shared_file = self.shared_dir / group_name / f"{proj_name}.todo"
+                    if shared_file.exists():
+                        shared_file.unlink()
 
-        del registry["projects"][name]
+        for proj_name in to_remove:
+            del registry["projects"][proj_name]
         self.save_registry(registry)
         return True
 
