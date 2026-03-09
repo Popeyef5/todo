@@ -1303,9 +1303,8 @@ class TodoTUI:
         if self.input_mode == 'project_new' and text:
             try:
                 self.manager.create_project(text)
-                self.current_project = text
                 self._refresh_tasks()
-                self.modal_cursor = 0
+                self._move_cursor_to_project(text)
                 self._add_output(f"✓ Created project: {text}")
             except ValueError as e:
                 self._add_output(f"✗ {e}")
@@ -1664,6 +1663,13 @@ class TodoTUI:
         if item[0] == 'header':
             return item[1]
         return self.tasks[item[1]].project_name
+
+    def _move_cursor_to_project(self, name: str):
+        """Move the modal cursor to the header for the given project name."""
+        for idx, item in enumerate(self.nav_items):
+            if item == ('header', name):
+                self.modal_cursor = idx
+                return
 
     def _propagate(self):
         self.dirty = True
@@ -2103,9 +2109,8 @@ class TodoTUI:
                 return
             name = args[1]
             self.manager.create_project(name)
-            self.current_project = name
             self._refresh_tasks()
-            self.modal_cursor = 0
+            self._move_cursor_to_project(name)
             self._add_output(f"✓ Created project: {name}")
         elif sub == 'delete':
             if len(args) < 2:

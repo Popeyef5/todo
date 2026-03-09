@@ -678,7 +678,6 @@ class TodoShell:
             name = args[1]
             self.manager.create_project(name)
             print(render.success(f"Created project: {name}"))
-            self.current_project = name
             self._refresh_tasks()
         elif sub == 'delete':
             if len(args) < 2:
