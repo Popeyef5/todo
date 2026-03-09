@@ -457,7 +457,7 @@ class TodoTUI:
                 collapse_icon = theme.collapse_closed if is_collapsed else theme.collapse_open
                 depth = project_name.count("/")
                 display_name = project_name.rsplit("/", 1)[-1] if "/" in project_name else project_name
-                header_indent = "  " * depth
+                header_indent = "    " * depth
                 label = f" {header_indent}{collapse_icon} {display_name}"
                 try:
                     if bordered:
@@ -480,7 +480,7 @@ class TodoTUI:
                 checkbox = theme.checkbox_checked if task.checked else theme.checkbox_unchecked
                 task_depth = len(task.indent) // 4
                 project_depth = task.project_name.count("/") + 1 if not self.current_project else 0
-                indent_visual = "  " * (task_depth + project_depth)
+                indent_visual = "    " * (task_depth + project_depth)
                 line_text = f" {idx_str} {indent_visual}{checkbox} {task.text}"
 
                 if len(line_text) >= cw:
@@ -551,11 +551,12 @@ class TodoTUI:
             hint = " ^T:mode  ^F:full  ^S:staging  PgUp/PgDn:scroll  Tab:complete"
 
         bar = f"{mode_label}{sep}{project_label} {sep}{hint}"
-        bar = bar.ljust(w - 1)
+        bar = bar.ljust(w)
 
+        attr = curses.color_pair(6) | curses.A_BOLD
         try:
-            self.stdscr.addnstr(self.status_y, 0, bar, w - 1,
-                                curses.color_pair(6) | curses.A_BOLD)
+            self.stdscr.addnstr(self.status_y, 0, bar, w - 1, attr)
+            self.stdscr.insstr(self.status_y, w - 1, bar[w - 1] if len(bar) > w - 1 else " ", attr)
         except curses.error:
             pass
         self.stdscr.noutrefresh()
@@ -1678,7 +1679,7 @@ class TodoTUI:
             full_name = p['name']
             depth = full_name.count("/")
             display_name = full_name.rsplit("/", 1)[-1] if "/" in full_name else full_name
-            indent = "  " + "  " * depth
+            indent = "  " + "    " * depth
             marker = " ●" if full_name == self.current_project else ""
             shared = f" (shared: {', '.join(p['shared_in'])})" if p['shared_in'] else ""
             self._add_output(f"{indent}{display_name}: {p['todo_count']} pending{shared}{marker}")

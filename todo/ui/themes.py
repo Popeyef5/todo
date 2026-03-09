@@ -230,6 +230,7 @@ modern_theme = Theme(
     input_separator="─",
     border_tee_left="├",
     border_tee_right="┤",
+    status_bar_position="bottom",
 )
 
 
@@ -302,6 +303,7 @@ cyber_theme = Theme(
     input_separator="─",
     border_tee_left="├",
     border_tee_right="┤",
+    status_bar_position="bottom",
 )
 
 
@@ -371,6 +373,7 @@ minimal_theme = Theme(
     input_separator="-",
     border_tee_left="+",
     border_tee_right="+",
+    status_bar_position="bottom",
 )
 
 

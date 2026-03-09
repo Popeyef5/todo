@@ -251,13 +251,13 @@ class TodoShell:
                             seen_projects.add(ancestor)
                             depth = ancestor.count("/")
                             display_name = ancestor.rsplit("/", 1)[-1] if "/" in ancestor else ancestor
-                            header_indent = "  " + "  " * depth
+                            header_indent = "  " + "    " * depth
                             if lines:
                                 lines.append("")
                             lines.append(f"{header_indent}{render.color(display_name, S.BLUE, S.BOLD)}")
                     depth = current_project.count("/")
                     display_name = current_project.rsplit("/", 1)[-1] if "/" in current_project else current_project
-                    header_indent = "  " + "  " * depth
+                    header_indent = "  " + "    " * depth
                     if lines:
                         lines.append("")
                     lines.append(f"{header_indent}{render.color(display_name, S.BLUE, S.BOLD)}")
