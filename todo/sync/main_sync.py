@@ -52,7 +52,7 @@ class MainSync(GitSyncBase):
 
             # Create .gitignore
             gitignore = self.directory / ".gitignore"
-            gitignore.write_text("shared/\n")
+            gitignore.write_text("shared/\n.stage.json\n")
 
         self._configure_git()
 

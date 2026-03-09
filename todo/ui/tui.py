@@ -11,6 +11,7 @@ import curses
 import io
 import shlex
 import sys
+import termios
 from pathlib import Path
 from typing import List, Optional
 
@@ -22,6 +23,7 @@ from todo.sync.providers import GitHubProvider, GitLabProvider, parse_remote_url
 from todo.ui.tasks import (
     TaskRef, parse_tasks_from_file, toggle_task_in_file,
     add_task_to_file, edit_task_in_file, remove_task_from_file,
+    get_children_ids,
 )
 from todo.ui.themes import (
     get_theme, set_theme, list_themes, load_custom_themes,
@@ -30,6 +32,7 @@ from todo.ui.themes import (
 
 CTRL_T = 20
 CTRL_F = 6
+CTRL_S = 19
 
 
 class TodoTUI:
@@ -53,6 +56,7 @@ class TodoTUI:
         self.cmd_history: List[str] = []
         self.history_pos = -1
         self.history_stash = ''
+        self.output_scroll = 0  # 0 = pinned to bottom, >0 = scrolled up
 
         # Task panel scroll
         self.task_scroll = 0
@@ -78,6 +82,9 @@ class TodoTUI:
         self._setup_group_name = None  # when set, setup wizard targets this group
         self._initial_target = initial_target
 
+        # Staging ground
+        self.stage_view = False
+
     def run(self):
         """Entry point"""
         curses.wrapper(self._main)
@@ -87,6 +94,12 @@ class TodoTUI:
         curses.curs_set(1)
         stdscr.keypad(True)
         stdscr.timeout(1000)
+
+        # Disable XON/XOFF flow control so Ctrl+S reaches us as a keypress
+        fd = sys.stdin.fileno()
+        attrs = termios.tcgetattr(fd)
+        attrs[0] &= ~termios.IXON
+        termios.tcsetattr(fd, termios.TCSANOW, attrs)
 
         curses.start_color()
         curses.use_default_colors()
@@ -139,6 +152,10 @@ class TodoTUI:
 
             if key == CTRL_F:
                 self._toggle_fullscreen()
+                continue
+
+            if key == CTRL_S:
+                self._toggle_stage_view()
                 continue
 
             if self.mode == 'modal':
@@ -322,7 +339,10 @@ class TodoTUI:
         h, w = win.getmaxyx()
 
         # Title
-        scope = self.current_project or "all projects"
+        if self.stage_view:
+            scope = "⚡ staging"
+        else:
+            scope = self.current_project or "all projects"
         unchecked = sum(1 for t in self.tasks if not t.checked)
         checked = sum(1 for t in self.tasks if t.checked)
         title = f" {scope} — {unchecked} pending, {checked} done "
@@ -487,10 +507,12 @@ class TodoTUI:
             mode_label += "⛶ "
         project_label = f" {self.current_project}" if self.current_project else " all"
 
+        if self.stage_view:
+            project_label = " ⚡staging"
         if self.mode == 'modal':
-            hint = " ↑↓:nav  t:toggle  a:add  A:child  e:edit  d:del  u:use  c:collapse  ^F:fullscreen  q:quit"
+            hint = " ↑↓:nav  t:toggle  a:add  A:child  e:edit  d:del  s:stage  u:use  c:collapse  ^S:view  q:quit"
         else:
-            hint = " Ctrl+T: switch mode  Ctrl+F: fullscreen"
+            hint = " ^T:mode  ^F:full  ^S:staging  PgUp/PgDn:scroll  Tab:complete"
 
         bar = f"{mode_label}{sep}{project_label} {sep}{hint}"
         bar = bar.ljust(w - 1)
@@ -517,7 +539,10 @@ class TodoTUI:
         cx = 1 if bordered else 0
         cw = w - 2 if bordered else w
 
-        visible = self.output_lines[-h:]
+        total = len(self.output_lines)
+        end = total - self.output_scroll
+        start = max(end - h, 0)
+        visible = self.output_lines[start:end]
         for i, line in enumerate(visible):
             display = line[:cw - 1] if len(line) >= cw else line
             try:
@@ -695,6 +720,10 @@ class TodoTUI:
             self._modal_toggle_collapse()
             return
 
+        if key == ord('s'):
+            self._modal_stage_unstage()
+            return
+
         if key == ord('q'):
             self._modal_quit()
             return
@@ -805,6 +834,47 @@ class TodoTUI:
         else:
             self.collapsed_projects.add(project)
         self._rebuild_nav_items()
+        self._full_render()
+
+    def _toggle_stage_view(self):
+        if self.input_mode:
+            return
+        self.stage_view = not self.stage_view
+        self.modal_cursor = 0
+        self.task_scroll = 0
+        self._refresh_tasks()
+        if self.stage_view:
+            self._add_output("⚡ Staging view")
+        else:
+            self._add_output("✓ Normal view")
+        self._full_render()
+
+    def _modal_stage_unstage(self):
+        task = self._current_nav_task()
+        if not task:
+            return
+        if not task.task_id:
+            self._add_output("✗ Task has no ID")
+            self._full_render()
+            return
+        staged_ids = self.manager.load_staged_ids()
+        child_ids = get_children_ids(self.tasks, task)
+        if task.task_id in staged_ids:
+            staged_ids.discard(task.task_id)
+            for cid in child_ids:
+                staged_ids.discard(cid)
+            self.manager.save_staged_ids(staged_ids)
+            self._add_output(f"✓ Unstaged: {task.text}")
+            if self.stage_view:
+                self._refresh_tasks()
+                if self.modal_cursor >= len(self.nav_items) and self.nav_items:
+                    self.modal_cursor = len(self.nav_items) - 1
+        else:
+            staged_ids.add(task.task_id)
+            for cid in child_ids:
+                staged_ids.add(cid)
+            self.manager.save_staged_ids(staged_ids)
+            self._add_output(f"⚡ Staged: {task.text}")
         self._full_render()
 
     def _handle_input_mode_key(self, key):
@@ -1047,6 +1117,14 @@ class TodoTUI:
             self._history_next()
             return
 
+        if key in (curses.KEY_PPAGE, curses.KEY_SR):  # Page Up or Shift+Up
+            self._output_scroll_up()
+            return
+
+        if key in (curses.KEY_NPAGE, curses.KEY_SF):  # Page Down or Shift+Down
+            self._output_scroll_down()
+            return
+
         self._edit_input_buffer(key)
         self._render_input_line()
         self._position_cursor()
@@ -1087,6 +1165,8 @@ class TodoTUI:
                 pos -= 1
             self.input_buffer = self.input_buffer[:pos] + self.input_buffer[self.input_cursor:]
             self.input_cursor = pos
+        elif key == 9:  # Tab
+            self._tab_complete()
         elif 32 <= key <= 126:
             ch = chr(key)
             self.input_buffer = (
@@ -1126,6 +1206,46 @@ class TodoTUI:
         self._position_cursor()
         curses.doupdate()
 
+    _TAB_COMMANDS = [
+        'help', 'projects', 'use', 'ls', 'show', 'add', 'addc',
+        'toggle', 'check', 'uncheck', 'edit', 'rm', 'new',
+        'stage', 'unstage', 'staged',
+        'group', 'setup', 'sync', 'push', 'pull',
+        'status', 'theme', 'config', 'nuke', 'link', 'unlink',
+        'clear', 'quit', 'exit',
+    ]
+
+    def _tab_complete(self):
+        text = self.input_buffer[:self.input_cursor]
+        if ' ' in text:
+            return  # only complete the first word
+        if not text:
+            return
+        matches = [c for c in self._TAB_COMMANDS if c.startswith(text.lower())]
+        if len(matches) == 1:
+            self.input_buffer = matches[0] + ' ' + self.input_buffer[self.input_cursor:]
+            self.input_cursor = len(matches[0]) + 1
+            self._render_input_line()
+            self._position_cursor()
+            curses.doupdate()
+        elif matches:
+            self._add_output("  " + "  ".join(matches))
+            self._render_output_panel()
+            self._render_input_line()
+            self._position_cursor()
+            curses.doupdate()
+
+    def _output_scroll_up(self):
+        max_scroll = max(len(self.output_lines) - self.output_h, 0)
+        self.output_scroll = min(self.output_scroll + self.output_h, max_scroll)
+        self._render_output_panel()
+        curses.doupdate()
+
+    def _output_scroll_down(self):
+        self.output_scroll = max(self.output_scroll - self.output_h, 0)
+        self._render_output_panel()
+        curses.doupdate()
+
     def _execute_command(self):
         line = self.input_buffer.strip()
         self.input_buffer = ''
@@ -1163,6 +1283,9 @@ class TodoTUI:
             'e': self._cmd_edit,
             'rm': self._cmd_rm,
             'new': self._cmd_new,
+            'stage': self._cmd_stage,
+            'unstage': self._cmd_unstage,
+            'staged': self._cmd_staged,
             'group': self._cmd_group,
             'setup': self._cmd_setup,
             'sync': self._cmd_sync,
@@ -1207,6 +1330,9 @@ class TodoTUI:
             for name, path in self.manager.get_all_project_paths():
                 tasks = parse_tasks_from_file(path, name)
                 self.tasks.extend(tasks)
+        if self.stage_view:
+            staged_ids = self.manager.load_staged_ids()
+            self.tasks = [t for t in self.tasks if t.task_id in staged_ids]
         self._rebuild_nav_items()
 
     def _rebuild_nav_items(self):
@@ -1318,6 +1444,7 @@ class TodoTUI:
     def _add_output(self, text: str):
         for line in text.split('\n'):
             self.output_lines.append(line)
+        self.output_scroll = 0
 
     def _get_task(self, n: int) -> Optional[TaskRef]:
         if n < 1 or n > len(self.tasks):
@@ -1410,6 +1537,11 @@ class TodoTUI:
         self._add_output("  edit <n> <text> Edit task")
         self._add_output("  rm <n>          Remove task")
         self._add_output("  <n>             Toggle shorthand")
+        self._add_output("Staging:")
+        self._add_output("  stage <n>       Stage task(s) for focused work")
+        self._add_output("  unstage <n>     Unstage task(s)")
+        self._add_output("  staged          Show staged tasks")
+        self._add_output("  Ctrl+S          Toggle staging view")
         self._add_output("Projects:")
         self._add_output("  new <name>      Create project")
         self._add_output("Groups:")
@@ -1658,6 +1790,68 @@ class TodoTUI:
         self._refresh_tasks()
         self.modal_cursor = 0
         self._add_output(f"✓ Created project: {name}")
+
+    def _cmd_stage(self, args):
+        if not args:
+            self._add_output("✗ Usage: stage <n> [n2 n3 ...]  (Ctrl+S to toggle view)")
+            return
+        staged_ids = self.manager.load_staged_ids()
+        for arg in args:
+            try:
+                n = int(arg)
+            except ValueError:
+                self._add_output(f"✗ Expected a number, got: {arg}")
+                continue
+            task = self._get_task(n)
+            if not task:
+                continue
+            if not task.task_id:
+                self._add_output(f"✗ Task #{n} has no ID")
+                continue
+            if task.task_id in staged_ids:
+                self._add_output(f"  #{n} already staged")
+                continue
+            staged_ids.add(task.task_id)
+            for cid in get_children_ids(self.tasks, task):
+                staged_ids.add(cid)
+            self._add_output(f"⚡ Staged #{n}: {task.text}")
+        self.manager.save_staged_ids(staged_ids)
+
+    def _cmd_unstage(self, args):
+        if not args:
+            self._add_output("✗ Usage: unstage <n> [n2 n3 ...]")
+            return
+        staged_ids = self.manager.load_staged_ids()
+        for arg in args:
+            try:
+                n = int(arg)
+            except ValueError:
+                self._add_output(f"✗ Expected a number, got: {arg}")
+                continue
+            task = self._get_task(n)
+            if not task:
+                continue
+            if task.task_id not in staged_ids:
+                self._add_output(f"  #{n} is not staged")
+                continue
+            staged_ids.discard(task.task_id)
+            self._add_output(f"✓ Unstaged #{n}: {task.text}")
+        self.manager.save_staged_ids(staged_ids)
+        if self.stage_view:
+            self._refresh_tasks()
+
+    def _cmd_staged(self, args):
+        old_view = self.stage_view
+        self.stage_view = True
+        self._refresh_tasks()
+        if self.tasks:
+            for i, task in enumerate(self.tasks, 1):
+                checkbox = "[x]" if task.checked else "[ ]"
+                self._add_output(f"  {i:>3} {checkbox} {task.text}  ({task.project_name})")
+        else:
+            self._add_output("  No staged tasks. Use 'stage <n>' to stage tasks.")
+        self.stage_view = old_view
+        self._refresh_tasks()
 
     def _cmd_group(self, args):
         """Handle group sub-commands: new, add, sync, list"""

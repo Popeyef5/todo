@@ -22,6 +22,7 @@ from todo.ui.render import S
 from todo.ui.tasks import (
     TaskRef, parse_tasks_from_file, toggle_task_in_file,
     add_task_to_file, edit_task_in_file, remove_task_from_file,
+    get_children_ids,
 )
 from todo.ui.themes import get_theme, set_theme, list_themes, load_custom_themes
 
@@ -53,6 +54,7 @@ class TodoShell:
         self.current_project = None  # Name of current project scope
         self.tasks: List[TaskRef] = []  # Numbered task results
         self.dirty = False
+        self.stage_view = False
         self._bg_sync = None  # BackgroundSync instance
 
         # Load custom themes from ~/.todo/themes/, then apply saved preference
@@ -87,7 +89,8 @@ class TodoShell:
                 'help', 'projects', 'use', 'ls', 'show', 'add', 'addc',
                 'toggle', 'check', 'uncheck', 'edit', 'rm', 'new', 'group',
                 'setup', 'sync', 'push', 'pull', 'config', 'nuke', 'link',
-                'unlink', 'status', 'theme', 'clear', 'quit', 'q', 'exit',
+                'unlink', 'status', 'theme', 'stage', 'unstage', 'staged',
+                'clear', 'quit', 'q', 'exit',
             ]
 
             def completer(text, state):
@@ -166,6 +169,9 @@ class TodoShell:
                 'nuke': self._cmd_nuke,
                 'link': self._cmd_link,
                 'unlink': self._cmd_unlink,
+                'stage': self._cmd_stage,
+                'unstage': self._cmd_unstage,
+                'staged': self._cmd_staged,
                 'status': self._cmd_status,
                 'theme': self._cmd_theme,
                 'clear': self._cmd_clear,
@@ -214,6 +220,9 @@ class TodoShell:
             for name, path in self.manager.get_all_project_paths():
                 tasks = parse_tasks_from_file(path, name)
                 self.tasks.extend(tasks)
+        if self.stage_view:
+            staged_ids = self.manager.load_staged_ids()
+            self.tasks = [t for t in self.tasks if t.task_id in staged_ids]
 
     def _print_tasks(self, tasks: List[TaskRef] = None):
         """Print numbered task list"""
@@ -278,6 +287,12 @@ class TodoShell:
             f"    {render.color('uncheck', S.BRIGHT_CYAN)} {render.color('<n>', S.DIM)}        Mark task as not done",
             f"    {render.color('edit', S.BRIGHT_CYAN)} {render.color('<n> <text>', S.DIM)}    Edit task text",
             f"    {render.color('rm', S.BRIGHT_CYAN)} {render.color('<n>', S.DIM)}             Remove a task",
+            "",
+            f"  {render.color('Staging', S.BOLD, S.BRIGHT_WHITE)}",
+            f"    {render.color('stage', S.BRIGHT_CYAN)} {render.color('<n>', S.DIM)}           Stage task(s) for focused work",
+            f"    {render.color('stage', S.BRIGHT_CYAN)}                Toggle staging view on/off",
+            f"    {render.color('unstage', S.BRIGHT_CYAN)} {render.color('<n>', S.DIM)}         Unstage task(s)",
+            f"    {render.color('staged', S.BRIGHT_CYAN)}               Show staged tasks",
             "",
             f"  {render.color('Projects', S.BOLD, S.BRIGHT_WHITE)}",
             f"    {render.color('new', S.BRIGHT_CYAN)} {render.color('<name>', S.DIM)}         Create a new project",
@@ -472,6 +487,76 @@ class TodoShell:
                 print(render.dim(f"  #{n} already pending"))
         if changed:
             self._propagate()
+        self._refresh_tasks()
+
+    def _cmd_stage(self, args):
+        if not args:
+            # Toggle stage view
+            self.stage_view = not self.stage_view
+            self._refresh_tasks()
+            if self.stage_view:
+                print(render.success("Switched to staging view"))
+                self._print_tasks()
+            else:
+                print(render.success("Switched to normal view"))
+                self._print_tasks()
+            return
+        # Stage specific tasks by number
+        staged_ids = self.manager.load_staged_ids()
+        for arg in args:
+            try:
+                n = int(arg)
+            except ValueError:
+                print(render.error(f"Expected a number, got: {arg}"))
+                continue
+            task = self._get_task(n)
+            if not task:
+                continue
+            if not task.task_id:
+                print(render.error(f"Task #{n} has no ID"))
+                continue
+            if task.task_id in staged_ids:
+                print(render.dim(f"  #{n} already staged"))
+                continue
+            staged_ids.add(task.task_id)
+            for cid in get_children_ids(self.tasks, task):
+                staged_ids.add(cid)
+            print(render.success(f"Staged #{n}: {task.text}"))
+        self.manager.save_staged_ids(staged_ids)
+
+    def _cmd_unstage(self, args):
+        if not args:
+            print(render.error("Usage: unstage <n> [n2 n3 ...]"))
+            return
+        staged_ids = self.manager.load_staged_ids()
+        for arg in args:
+            try:
+                n = int(arg)
+            except ValueError:
+                print(render.error(f"Expected a number, got: {arg}"))
+                continue
+            task = self._get_task(n)
+            if not task:
+                continue
+            if task.task_id not in staged_ids:
+                print(render.dim(f"  #{n} is not staged"))
+                continue
+            staged_ids.discard(task.task_id)
+            print(render.success(f"Unstaged #{n}: {task.text}"))
+        self.manager.save_staged_ids(staged_ids)
+        if self.stage_view:
+            self._refresh_tasks()
+            self._print_tasks()
+
+    def _cmd_staged(self, args):
+        # Show staged view
+        self.stage_view = True
+        self._refresh_tasks()
+        if self.tasks:
+            self._print_tasks()
+        else:
+            print(render.dim("  No staged tasks. Use 'stage <n>' to stage tasks."))
+        self.stage_view = False
         self._refresh_tasks()
 
     def _cmd_edit(self, args):

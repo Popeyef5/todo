@@ -120,6 +120,26 @@ def _find_parent_line(lines: List[str], child_line: int) -> Optional[int]:
     return None
 
 
+def get_children_ids(tasks: List[TaskRef], task: TaskRef) -> List[str]:
+    """Return task_ids of all children (recursively) of the given task."""
+    ids = []
+    found = False
+    parent_indent = len(task.indent)
+    for t in tasks:
+        if t is task:
+            found = True
+            continue
+        if not found:
+            continue
+        if t.todo_path != task.todo_path:
+            break
+        if len(t.indent) <= parent_indent:
+            break
+        if t.task_id:
+            ids.append(t.task_id)
+    return ids
+
+
 def toggle_task_in_file(file_path: Path, line_no: int) -> bool:
     """Toggle a checkbox on a specific line. Returns new checked state.
 

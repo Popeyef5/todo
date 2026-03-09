@@ -149,6 +149,25 @@ class TodoManager:
 
         return paths
 
+    # ── Staging ──────────────────────────────────────────────
+
+    def load_staged_ids(self) -> set:
+        """Load the set of staged task IDs from .stage.json"""
+        stage_file = self.home_dir / ".stage.json"
+        if stage_file.exists():
+            try:
+                with open(stage_file, "r") as f:
+                    return set(json.load(f))
+            except (json.JSONDecodeError, IOError):
+                pass
+        return set()
+
+    def save_staged_ids(self, ids: set):
+        """Save the set of staged task IDs to .stage.json"""
+        stage_file = self.home_dir / ".stage.json"
+        with open(stage_file, "w") as f:
+            json.dump(sorted(ids), f)
+
     # ── Groups ──────────────────────────────────────────────
 
     def create_group(self, name: str):
