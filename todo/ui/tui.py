@@ -71,6 +71,7 @@ class TodoTUI:
         self._add_indent = ""            # indent for the new task
         self._add_after_line = None      # line_no to insert after (subtree end)
         self._delete_target_index = None  # task index pending delete confirmation
+        self._input_mode_output_start = 0  # output_lines count when input_mode was set
 
         # Setup wizard state
         self._setup_provider = None   # "github" / "gitlab" / "other"
@@ -185,14 +186,21 @@ class TodoTUI:
         self.mid_banner_h = min(len(theme.tui_banner_mid), MAX_BANNER_LINES) if theme.tui_banner_mid else 0
 
         # Terminal panel chrome: top border + bottom border + optional separator
-        has_sep = bool(theme.input_separator) and not self.fullscreen
+        # Show separator when not fullscreen, or when fullscreen with an active prompt
+        fs_prompt = self.fullscreen and self.input_mode
+        has_sep = bool(theme.input_separator) and (not self.fullscreen or fs_prompt)
         term_chrome = 2 + (1 if has_sep else 0)  # top/bottom border + separator
 
         # Fixed vertical space: banners + status bar(1) + terminal chrome + input line(1)
         fixed = self.top_banner_h + self.mid_banner_h + 1 + term_chrome + 1
         remaining = max(h - fixed, 4)  # at least 4 rows for panels
 
-        if self.fullscreen:
+        if fs_prompt:
+            # Temporarily shrink task panel to show only the prompt-related lines
+            prompt_lines = len(self.output_lines) - self._input_mode_output_start
+            self.output_h = max(min(prompt_lines, remaining // 3, 10), 1)
+            self.task_h = max(remaining - self.output_h, 3)
+        elif self.fullscreen:
             self.task_h = max(remaining, 3)
             self.output_h = 0
         else:
@@ -252,6 +260,11 @@ class TodoTUI:
         )
 
     def _full_render(self):
+        if self.fullscreen:
+            # Recalculate layout when input_mode changes visibility of output panel
+            self._create_windows()
+            self.stdscr.clear()
+            self.stdscr.refresh()
         self._render_top_banner()
         self._render_task_panel()
         self._render_mid_banner()
@@ -336,7 +349,7 @@ class TodoTUI:
     def _render_input_separator(self):
         """Draw the separator line between output and input inside the terminal box."""
         theme = get_theme()
-        if not theme.input_separator or self.sep_y is None or self.fullscreen:
+        if not theme.input_separator or self.sep_y is None or (self.fullscreen and not self.input_mode):
             return
         w = self.width
         if self.sep_y >= self.height:
@@ -785,6 +798,7 @@ class TodoTUI:
         self._full_render()
 
     def _modal_start_add(self):
+        self._input_mode_output_start = len(self.output_lines)
         # Infer project: current scope, or from the highlighted item
         project = self.current_project or self._current_nav_project()
         if not project:
@@ -806,6 +820,7 @@ class TodoTUI:
         self._full_render()
 
     def _modal_start_add_child(self):
+        self._input_mode_output_start = len(self.output_lines)
         task = self._current_nav_task()
         if not task:
             self._add_output("✗ Select a task to add a child to")
@@ -821,6 +836,7 @@ class TodoTUI:
         self._full_render()
 
     def _modal_start_edit(self):
+        self._input_mode_output_start = len(self.output_lines)
         task = self._current_nav_task()
         if not task:
             return
@@ -832,6 +848,7 @@ class TodoTUI:
         self._full_render()
 
     def _modal_delete(self):
+        self._input_mode_output_start = len(self.output_lines)
         task = self._current_nav_task()
         if not task:
             return
@@ -844,6 +861,7 @@ class TodoTUI:
         self._full_render()
 
     def _modal_start_use(self):
+        self._input_mode_output_start = len(self.output_lines)
         projects = self.manager.list_projects()
         if not projects:
             self._add_output("✗ No projects.")
@@ -859,6 +877,7 @@ class TodoTUI:
         self._full_render()
 
     def _modal_start_find(self):
+        self._input_mode_output_start = len(self.output_lines)
         self.input_mode = 'find'
         self.input_buffer = ''
         self.input_cursor = 0
@@ -866,6 +885,7 @@ class TodoTUI:
         self._full_render()
 
     def _modal_quit(self):
+        self._input_mode_output_start = len(self.output_lines)
         self._add_output("  Quit?")
         self.input_mode = 'confirm_quit'
         self.input_buffer = ''
@@ -1763,6 +1783,7 @@ class TodoTUI:
                 self._refresh_tasks()
                 self._add_output(f"✓ Added to {projects[0]['name']}: {text}")
                 return
+            self._input_mode_output_start = len(self.output_lines)
             self._add_output("  Pick a project:")
             for i, p in enumerate(projects, 1):
                 self._add_output(f"    {i}) {p['name']}")
@@ -2111,6 +2132,7 @@ class TodoTUI:
 
     def _start_setup_wizard(self):
         """Begin the setup wizard from step 1 (provider selection)."""
+        self._input_mode_output_start = len(self.output_lines)
         self._add_output("")
         if self._setup_group_name:
             self._add_output(f"  Git remote setup for group '{self._setup_group_name}'")
