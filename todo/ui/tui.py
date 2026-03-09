@@ -920,6 +920,14 @@ class TodoTUI:
         self._full_render()
 
     def _modal_stage_unstage(self):
+        item = self._current_nav_item()
+        if not item:
+            return
+
+        if item[0] == 'header':
+            self._stage_unstage_project(item[1])
+            return
+
         task = self._current_nav_task()
         if not task:
             return
@@ -945,6 +953,37 @@ class TodoTUI:
                 staged_ids.add(cid)
             self.manager.save_staged_ids(staged_ids)
             self._add_output(f"⚡ Staged: {task.text}")
+        self._full_render()
+
+    def _stage_unstage_project(self, project_name: str):
+        """Stage or unstage all tasks belonging to a project and its subprojects."""
+        project_tasks = [
+            t for t in self.tasks
+            if t.project_name == project_name or t.project_name.startswith(project_name + "/")
+        ]
+        if not project_tasks:
+            self._add_output(f"✗ No tasks in {project_name}")
+            self._full_render()
+            return
+        task_ids = {t.task_id for t in project_tasks if t.task_id}
+        if not task_ids:
+            self._add_output(f"✗ Tasks in {project_name} have no IDs")
+            self._full_render()
+            return
+        staged_ids = self.manager.load_staged_ids()
+        # If all are already staged, unstage them; otherwise stage all
+        if task_ids <= staged_ids:
+            staged_ids -= task_ids
+            self.manager.save_staged_ids(staged_ids)
+            self._add_output(f"✓ Unstaged {len(task_ids)} tasks from {project_name}")
+            if self.stage_view:
+                self._refresh_tasks()
+                if self.modal_cursor >= len(self.nav_items) and self.nav_items:
+                    self.modal_cursor = len(self.nav_items) - 1
+        else:
+            staged_ids |= task_ids
+            self.manager.save_staged_ids(staged_ids)
+            self._add_output(f"⚡ Staged {len(task_ids)} tasks from {project_name}")
         self._full_render()
 
     def _handle_input_mode_key(self, key):
@@ -1940,14 +1979,15 @@ class TodoTUI:
 
     def _cmd_stage(self, args):
         if not args:
-            self._add_output("✗ Usage: stage <n> [n2 n3 ...]  (Ctrl+S to toggle view)")
+            self._add_output("✗ Usage: stage <n|project> [...]  (Ctrl+S to toggle view)")
             return
         staged_ids = self.manager.load_staged_ids()
         for arg in args:
             try:
                 n = int(arg)
             except ValueError:
-                self._add_output(f"✗ Expected a number, got: {arg}")
+                # Try as project name
+                self._stage_project_by_name(arg, staged_ids, stage=True)
                 continue
             task = self._get_task(n)
             if not task:
@@ -1966,14 +2006,15 @@ class TodoTUI:
 
     def _cmd_unstage(self, args):
         if not args:
-            self._add_output("✗ Usage: unstage <n> [n2 n3 ...]")
+            self._add_output("✗ Usage: unstage <n|project> [...]")
             return
         staged_ids = self.manager.load_staged_ids()
         for arg in args:
             try:
                 n = int(arg)
             except ValueError:
-                self._add_output(f"✗ Expected a number, got: {arg}")
+                # Try as project name
+                self._stage_project_by_name(arg, staged_ids, stage=False)
                 continue
             task = self._get_task(n)
             if not task:
@@ -1986,6 +2027,26 @@ class TodoTUI:
         self.manager.save_staged_ids(staged_ids)
         if self.stage_view:
             self._refresh_tasks()
+
+    def _stage_project_by_name(self, name: str, staged_ids: set, stage: bool):
+        """Stage or unstage all tasks in a project by name (used by REPL commands)."""
+        project_tasks = [
+            t for t in self.tasks
+            if t.project_name == name or t.project_name.startswith(name + "/")
+        ]
+        if not project_tasks:
+            self._add_output(f"✗ No project matching: {name}")
+            return
+        task_ids = {t.task_id for t in project_tasks if t.task_id}
+        if not task_ids:
+            self._add_output(f"✗ Tasks in {name} have no IDs")
+            return
+        if stage:
+            staged_ids |= task_ids
+            self._add_output(f"⚡ Staged {len(task_ids)} tasks from {name}")
+        else:
+            staged_ids -= task_ids
+            self._add_output(f"✓ Unstaged {len(task_ids)} tasks from {name}")
 
     def _cmd_staged(self, args):
         old_view = self.stage_view

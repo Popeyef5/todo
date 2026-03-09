@@ -530,13 +530,13 @@ class TodoShell:
                 print(render.success("Switched to normal view"))
                 self._print_tasks()
             return
-        # Stage specific tasks by number
+        # Stage specific tasks by number or project name
         staged_ids = self.manager.load_staged_ids()
         for arg in args:
             try:
                 n = int(arg)
             except ValueError:
-                print(render.error(f"Expected a number, got: {arg}"))
+                self._stage_project_by_name(arg, staged_ids, stage=True)
                 continue
             task = self._get_task(n)
             if not task:
@@ -555,14 +555,14 @@ class TodoShell:
 
     def _cmd_unstage(self, args):
         if not args:
-            print(render.error("Usage: unstage <n> [n2 n3 ...]"))
+            print(render.error("Usage: unstage <n|project> [...]"))
             return
         staged_ids = self.manager.load_staged_ids()
         for arg in args:
             try:
                 n = int(arg)
             except ValueError:
-                print(render.error(f"Expected a number, got: {arg}"))
+                self._stage_project_by_name(arg, staged_ids, stage=False)
                 continue
             task = self._get_task(n)
             if not task:
@@ -576,6 +576,26 @@ class TodoShell:
         if self.stage_view:
             self._refresh_tasks()
             self._print_tasks()
+
+    def _stage_project_by_name(self, name: str, staged_ids: set, stage: bool):
+        """Stage or unstage all tasks in a project by name."""
+        project_tasks = [
+            t for t in self.tasks
+            if t.project_name == name or t.project_name.startswith(name + "/")
+        ]
+        if not project_tasks:
+            print(render.error(f"No project matching: {name}"))
+            return
+        task_ids = {t.task_id for t in project_tasks if t.task_id}
+        if not task_ids:
+            print(render.error(f"Tasks in {name} have no IDs"))
+            return
+        if stage:
+            staged_ids |= task_ids
+            print(render.success(f"Staged {len(task_ids)} tasks from {name}"))
+        else:
+            staged_ids -= task_ids
+            print(render.success(f"Unstaged {len(task_ids)} tasks from {name}"))
 
     def _cmd_staged(self, args):
         # Show staged view
