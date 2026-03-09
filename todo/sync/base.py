@@ -135,8 +135,11 @@ class GitSyncBase(SyncInterface):
         local_sha = self._get_head_sha()
         upstream_sha = self._get_upstream_sha()
 
-        if not local_sha or not upstream_sha:
-            return {"status": "error", "local_sha": local_sha, "remote_sha": upstream_sha}
+        if not local_sha:
+            return {"status": "no_commits", "local_sha": None, "remote_sha": upstream_sha}
+
+        if not upstream_sha:
+            return {"status": "ahead", "local_sha": local_sha, "remote_sha": None}
 
         if local_sha == upstream_sha:
             return {"status": "up_to_date", "local_sha": local_sha, "remote_sha": upstream_sha}

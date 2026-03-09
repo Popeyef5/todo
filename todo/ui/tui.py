@@ -71,6 +71,7 @@ class TodoTUI:
         self._add_indent = ""            # indent for the new task
         self._add_after_line = None      # line_no to insert after (subtree end)
         self._delete_target_index = None  # task index pending delete confirmation
+        self._delete_target_project = None  # project name pending delete confirmation
         self._input_mode_output_start = 0  # output_lines count when input_mode was set
 
         # Setup wizard state
@@ -88,6 +89,9 @@ class TodoTUI:
 
         # Find filter (modal mode)
         self.find_filter = ''
+
+        # Hide completed tasks
+        self.hide_done = False
 
     def run(self):
         """Entry point"""
@@ -412,29 +416,43 @@ class TodoTUI:
             for nav_idx, item in enumerate(self.nav_items):
                 display_rows.append(('task', item[1], nav_idx))
         else:
-            seen_projects = set()
             nav_lookup = {tuple(item): idx for idx, item in enumerate(self.nav_items)}
+
+            # Group tasks by project for ordered iteration
+            tasks_by_project = {}
             for i, task in enumerate(self.tasks):
                 if self.find_filter and self.find_filter not in task.text.lower():
                     continue
-                if task.project_name not in seen_projects:
-                    seen_projects.add(task.project_name)
-                    # Emit ancestor headers that haven't been shown
-                    parts = task.project_name.split("/")
-                    for j in range(1, len(parts)):
-                        ancestor = "/".join(parts[:j])
-                        if ancestor not in seen_projects:
-                            seen_projects.add(ancestor)
-                            header_nav = nav_lookup.get(('header', ancestor))
-                            display_rows.append(('header', ancestor, header_nav))
-                    is_collapsed = self._is_project_collapsed(task.project_name)
-                    header_nav = nav_lookup.get(('header', task.project_name))
-                    display_rows.append(('header', task.project_name, header_nav))
-                    if is_collapsed:
-                        continue
-                task_nav = nav_lookup.get(('task', i))
-                if not self._is_project_collapsed(task.project_name):
-                    display_rows.append(('task', i, task_nav))
+                tasks_by_project.setdefault(task.project_name, []).append(i)
+
+            # Merge project names from tasks and registry, sorted
+            all_names = set(tasks_by_project.keys())
+            if not self.find_filter and not self.stage_view:
+                all_names |= set(p["name"] for p in self.manager.list_projects())
+            sorted_projects = sorted(all_names)
+
+            seen_projects = set()
+            for pname in sorted_projects:
+                if pname in seen_projects:
+                    continue
+                seen_projects.add(pname)
+                # Emit ancestor headers
+                parts = pname.split("/")
+                for j in range(1, len(parts)):
+                    ancestor = "/".join(parts[:j])
+                    if ancestor not in seen_projects:
+                        seen_projects.add(ancestor)
+                        header_nav = nav_lookup.get(('header', ancestor))
+                        display_rows.append(('header', ancestor, header_nav))
+                is_collapsed = self._is_project_collapsed(pname)
+                header_nav = nav_lookup.get(('header', pname))
+                display_rows.append(('header', pname, header_nav))
+                if is_collapsed:
+                    continue
+                for task_idx in tasks_by_project.get(pname, []):
+                    if not self._is_project_collapsed(pname):
+                        task_nav = nav_lookup.get(('task', task_idx))
+                        display_rows.append(('task', task_idx, task_nav))
 
         # Find which display row the cursor is on for scrolling
         cursor_display_row = 0
@@ -658,12 +676,16 @@ class TodoTUI:
         if self.input_mode == 'add':
             proj = self._add_target_project or self.current_project or ''
             return f"add({proj})> " if proj else "add> "
+        if self.input_mode == 'project_new':
+            return "project new> "
         if self.input_mode == 'edit':
             return "edit> "
         if self.input_mode in ('pick_project', 'use_project'):
             return "project #? "
         if self.input_mode == 'confirm_delete':
             return "delete? (y/n) "
+        if self.input_mode == 'confirm_delete_project':
+            return "delete project? (y/n) "
         if self.input_mode == 'confirm_quit':
             return "quit? (y/n) "
         if self.input_mode == 'confirm_nuke':
@@ -780,6 +802,18 @@ class TodoTUI:
             self._modal_stage_unstage()
             return
 
+        if key == ord('h'):
+            self._toggle_hide_done()
+            return
+
+        if key == ord('p'):
+            self._modal_start_new_project()
+            return
+
+        if key == ord('P'):  # Shift+P: new subproject under current project
+            self._modal_start_new_subproject()
+            return
+
         if key == ord('q'):
             self._modal_quit()
             return
@@ -849,10 +883,21 @@ class TodoTUI:
 
     def _modal_delete(self):
         self._input_mode_output_start = len(self.output_lines)
+        item = self._current_nav_item()
+        if not item:
+            return
+        if item[0] == 'header':
+            project_name = item[1]
+            self._delete_target_project = project_name
+            self._add_output(f"  Delete project '{project_name}' and all its tasks?")
+            self.input_mode = 'confirm_delete_project'
+            self.input_buffer = ''
+            self.input_cursor = 0
+            self._full_render()
+            return
         task = self._current_nav_task()
         if not task:
             return
-        item = self._current_nav_item()
         self._delete_target_index = item[1]
         self._add_output(f"  Delete '{task.text}'?")
         self.input_mode = 'confirm_delete'
@@ -884,6 +929,22 @@ class TodoTUI:
         self.find_filter = ''
         self._full_render()
 
+    def _modal_start_new_project(self):
+        self._input_mode_output_start = len(self.output_lines)
+        self.input_mode = 'project_new'
+        self.input_buffer = ''
+        self.input_cursor = 0
+        self._full_render()
+
+    def _modal_start_new_subproject(self):
+        self._input_mode_output_start = len(self.output_lines)
+        project = self.current_project or self._current_nav_project()
+        prefix = f"{project}/" if project else ''
+        self.input_mode = 'project_new'
+        self.input_buffer = prefix
+        self.input_cursor = len(prefix)
+        self._full_render()
+
     def _modal_quit(self):
         self._input_mode_output_start = len(self.output_lines)
         self._add_output("  Quit?")
@@ -904,6 +965,17 @@ class TodoTUI:
         else:
             self.collapsed_projects.add(project)
         self._rebuild_nav_items()
+        self._full_render()
+
+    def _toggle_hide_done(self):
+        self.hide_done = not self.hide_done
+        self.modal_cursor = 0
+        self.task_scroll = 0
+        self._refresh_tasks()
+        if self.hide_done:
+            self._add_output("✓ Hiding completed tasks")
+        else:
+            self._add_output("✓ Showing all tasks")
         self._full_render()
 
     def _toggle_stage_view(self):
@@ -1025,6 +1097,26 @@ class TodoTUI:
                 self._full_render()
             return
 
+        # Confirm delete project: respond to single y/n keypress
+        if self.input_mode == 'confirm_delete_project':
+            if key in (ord('y'), ord('Y')):
+                name = self._delete_target_project
+                if name and self.manager.remove_project(name):
+                    self._add_output(f"✓ Deleted project: {name}")
+                    if self.current_project == name:
+                        self.current_project = None
+                    self._propagate()
+                    self._refresh_tasks()
+                    if self.modal_cursor >= len(self.nav_items) and self.nav_items:
+                        self.modal_cursor = len(self.nav_items) - 1
+                else:
+                    self._add_output(f"✗ Project '{name}' not found")
+            else:
+                self._add_output("(cancelled)")
+            self._reset_input_mode()
+            self._full_render()
+            return
+
         # Confirm quit: respond to single y/n keypress
         if self.input_mode == 'confirm_quit':
             if key in (ord('y'), ord('Y')):
@@ -1105,6 +1197,7 @@ class TodoTUI:
         self._add_indent = ""
         self._add_after_line = None
         self._delete_target_index = None
+        self._delete_target_project = None
         self._setup_provider = None
         self._setup_token = None
         self._setup_username = None
@@ -1206,6 +1299,19 @@ class TodoTUI:
 
     def _commit_input_mode(self):
         text = self.input_buffer.strip()
+
+        if self.input_mode == 'project_new' and text:
+            try:
+                self.manager.create_project(text)
+                self.current_project = text
+                self._refresh_tasks()
+                self.modal_cursor = 0
+                self._add_output(f"✓ Created project: {text}")
+            except ValueError as e:
+                self._add_output(f"✗ {e}")
+            self._reset_input_mode()
+            self._full_render()
+            return
 
         if self.input_mode == 'add' and text:
             project = self._add_target_project or self.current_project
@@ -1341,8 +1447,8 @@ class TodoTUI:
 
     _TAB_COMMANDS = [
         'help', 'projects', 'use', 'ls', 'show', 'add', 'addc',
-        'toggle', 'check', 'uncheck', 'edit', 'rm', 'new',
-        'stage', 'unstage', 'staged',
+        'toggle', 'check', 'uncheck', 'edit', 'rm', 'project',
+        'hide', 'stage', 'unstage', 'staged',
         'group', 'setup', 'sync', 'push', 'pull',
         'status', 'theme', 'config', 'nuke', 'link', 'unlink',
         'clear', 'quit', 'exit',
@@ -1411,12 +1517,13 @@ class TodoTUI:
             'toggle': self._cmd_toggle,
             't': self._cmd_toggle,
             'find': self._cmd_find,
+            'hide': self._cmd_hide,
             'check': self._cmd_check,
             'uncheck': self._cmd_uncheck,
             'edit': self._cmd_edit,
             'e': self._cmd_edit,
             'rm': self._cmd_rm,
-            'new': self._cmd_new,
+            'project': self._cmd_project,
             'stage': self._cmd_stage,
             'unstage': self._cmd_unstage,
             'staged': self._cmd_staged,
@@ -1468,6 +1575,8 @@ class TodoTUI:
         if self.stage_view:
             staged_ids = self.manager.load_staged_ids()
             self.tasks = [t for t in self.tasks if t.task_id in staged_ids]
+        if self.hide_done:
+            self.tasks = [t for t in self.tasks if not t.checked]
         self._rebuild_nav_items()
 
     def _is_project_collapsed(self, project_name: str) -> bool:
@@ -1498,26 +1607,38 @@ class TodoTUI:
                     continue
                 self.nav_items.append(('task', i))
         else:
-            seen_projects = set()
+            # Group tasks by project for ordered iteration
+            tasks_by_project = {}
             for i, task in enumerate(self.tasks):
                 if self.find_filter and self.find_filter not in task.text.lower():
                     continue
-                if task.project_name not in seen_projects:
-                    seen_projects.add(task.project_name)
-                    # Emit ancestor headers that haven't been seen yet
-                    parts = task.project_name.split("/")
-                    for j in range(1, len(parts)):
-                        ancestor = "/".join(parts[:j])
-                        if ancestor not in seen_projects:
-                            seen_projects.add(ancestor)
-                            self.nav_items.append(('header', ancestor))
-                    collapsed = self._is_project_collapsed(task.project_name)
-                    self.nav_items.append(('header', task.project_name))
-                    if collapsed:
-                        continue
-                if self._is_project_collapsed(task.project_name):
+                tasks_by_project.setdefault(task.project_name, []).append(i)
+
+            # Merge project names from tasks and registry, sorted
+            all_names = set(tasks_by_project.keys())
+            if not self.find_filter and not self.stage_view:
+                all_names |= set(p["name"] for p in self.manager.list_projects())
+            sorted_projects = sorted(all_names)
+
+            seen_projects = set()
+            for pname in sorted_projects:
+                if pname in seen_projects:
                     continue
-                self.nav_items.append(('task', i))
+                seen_projects.add(pname)
+                # Emit ancestor headers
+                parts = pname.split("/")
+                for j in range(1, len(parts)):
+                    ancestor = "/".join(parts[:j])
+                    if ancestor not in seen_projects:
+                        seen_projects.add(ancestor)
+                        self.nav_items.append(('header', ancestor))
+                collapsed = self._is_project_collapsed(pname)
+                self.nav_items.append(('header', pname))
+                if collapsed:
+                    continue
+                for task_idx in tasks_by_project.get(pname, []):
+                    if not self._is_project_collapsed(pname):
+                        self.nav_items.append(('task', task_idx))
         # Clamp cursor
         if self.nav_items:
             self.modal_cursor = max(0, min(self.modal_cursor, len(self.nav_items) - 1))
@@ -1688,6 +1809,7 @@ class TodoTUI:
         self._add_output("Viewing:")
         self._add_output("  ls              List tasks")
         self._add_output("  find <text>     Search tasks (find with no args clears filter)")
+        self._add_output("  hide            Toggle hiding completed tasks")
         self._add_output("  show <n>        Show task details")
         self._add_output("  status          Show status")
         self._add_output("Tasks:")
@@ -1705,7 +1827,8 @@ class TodoTUI:
         self._add_output("  staged          Show staged tasks")
         self._add_output("  Ctrl+S          Toggle staging view")
         self._add_output("Projects:")
-        self._add_output("  new <name>      Create project")
+        self._add_output("  project new <name>      Create project")
+        self._add_output("  project delete <name>   Delete project")
         self._add_output("Groups:")
         self._add_output("  group new <name>          Create a group")
         self._add_output("  group add <proj> <group>  Add project to group")
@@ -1731,7 +1854,7 @@ class TodoTUI:
     def _cmd_projects(self, args):
         projects = self.manager.list_projects()
         if not projects:
-            self._add_output("No projects. Use 'new <name>' to create one.")
+            self._add_output("No projects. Use 'project new <name>' to create one.")
             return
         sorted_projects = sorted(projects, key=lambda p: p["name"])
         for p in sorted_projects:
@@ -1784,6 +1907,9 @@ class TodoTUI:
         else:
             self._add_output(f"  Found {len(matching)} task(s) matching '{' '.join(args)}'")
 
+    def _cmd_hide(self, args):
+        self._toggle_hide_done()
+
     def _cmd_show(self, args):
         if not args:
             self._add_output("✗ Usage: show <n>")
@@ -1812,7 +1938,7 @@ class TodoTUI:
             # Prompt user to pick a project
             projects = self.manager.list_projects()
             if not projects:
-                self._add_output("✗ No projects. Use 'new <name>' to create one.")
+                self._add_output("✗ No projects. Use 'project new <name>' to create one.")
                 return
             if len(projects) == 1:
                 # Only one project, use it directly
@@ -1966,16 +2092,33 @@ class TodoTUI:
         else:
             self._add_output("✗ Failed to remove task")
 
-    def _cmd_new(self, args):
+    def _cmd_project(self, args):
         if not args:
-            self._add_output("✗ Usage: new <project-name>")
+            self._add_output("✗ Usage: project <new|delete> ...")
             return
-        name = args[0]
-        self.manager.create_project(name)
-        self.current_project = name
-        self._refresh_tasks()
-        self.modal_cursor = 0
-        self._add_output(f"✓ Created project: {name}")
+        sub = args[0].lower()
+        if sub == 'new':
+            if len(args) < 2:
+                self._add_output("✗ Usage: project new <name>")
+                return
+            name = args[1]
+            self.manager.create_project(name)
+            self.current_project = name
+            self._refresh_tasks()
+            self.modal_cursor = 0
+            self._add_output(f"✓ Created project: {name}")
+        elif sub == 'delete':
+            if len(args) < 2:
+                self._add_output("✗ Usage: project delete <name>")
+                return
+            self._delete_target_project = args[1]
+            self._input_mode_output_start = len(self.output_lines)
+            self._add_output(f"  Delete project '{args[1]}' and all its tasks?")
+            self.input_mode = 'confirm_delete_project'
+            self.input_buffer = ''
+            self.input_cursor = 0
+        else:
+            self._add_output(f"✗ Unknown project action: {sub}")
 
     def _cmd_stage(self, args):
         if not args:

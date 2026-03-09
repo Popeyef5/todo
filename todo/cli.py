@@ -21,7 +21,7 @@ def main():
         return
 
     known_commands = {
-        'new', 'add', 'ls', 'show', 'toggle', 'check', 'uncheck',
+        'project', 'add', 'ls', 'show', 'toggle', 'check', 'uncheck',
         'edit', 'rm', 'addc', 'projects', 'status', 'setup',
         'push', 'pull', 'theme', 'group',
         'config', 'nuke', 'link', 'unlink', 'mcp',
@@ -39,9 +39,14 @@ def main():
     parser = argparse.ArgumentParser(description="Todo - Centralized TODO management")
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
 
-    # new (was 'create')
-    new_parser = subparsers.add_parser('new', help='Create a new project')
-    new_parser.add_argument('name', help='Project name')
+    # project
+    project_parser = subparsers.add_parser('project', help='Project operations')
+    project_subparsers = project_parser.add_subparsers(dest='project_action')
+    project_new = project_subparsers.add_parser('new', help='Create a new project')
+    project_new.add_argument('name', help='Project name')
+    project_delete = project_subparsers.add_parser('delete', help='Delete a project')
+    project_delete.add_argument('name', help='Project name')
+    project_delete.add_argument('--force', action='store_true', help='Skip confirmation')
 
     # add
     add_parser = subparsers.add_parser('add', help='Add a task to a project')
@@ -164,9 +169,23 @@ def main():
     manager = TodoManager()
 
     try:
-        if args.command == 'new':
-            path = manager.create_project(args.name)
-            print(f"Created project: {args.name} ({path})")
+        if args.command == 'project':
+            if args.project_action == 'new':
+                path = manager.create_project(args.name)
+                print(f"Created project: {args.name} ({path})")
+            elif args.project_action == 'delete':
+                if not args.force:
+                    confirm = input(f"Delete project '{args.name}' and all its tasks? [y/N]: ").strip().lower()
+                    if confirm != 'y':
+                        print("Cancelled")
+                        return
+                if manager.remove_project(args.name):
+                    print(f"Deleted project: {args.name}")
+                else:
+                    print(f"Project '{args.name}' not found")
+                    sys.exit(1)
+            else:
+                print("Usage: todo project {new|delete}")
 
         elif args.command == 'add':
             if not args.project:
@@ -341,7 +360,7 @@ def main():
             from todo.ui.tasks import parse_tasks_from_file
             project_list = manager.list_projects()
             if not project_list:
-                print("No projects found. Use 'todo new <name>' to create one.")
+                print("No projects found. Use 'todo project new <name>' to create one.")
             else:
                 print("Projects:")
                 sorted_projects = sorted(project_list, key=lambda p: p["name"])
@@ -494,7 +513,7 @@ def main():
 
         elif args.command == 'nuke':
             if manager.nuke_all(force=args.force):
-                print("All todo data removed. Run 'todo new <name>' to start fresh.")
+                print("All todo data removed. Run 'todo project new <name>' to start fresh.")
 
         elif args.command == 'sync':
             if args.sync_action == 'clone':

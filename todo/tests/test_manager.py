@@ -175,6 +175,108 @@ class TestSyncDataToShared:
         assert result["group_errors"] == {}
 
 
+class TestSyncSharedToData:
+    """Test that remote changes in shared/ propagate to data/ during sync."""
+
+    def _setup_group_with_git(self, manager, project_name="proj", group_name="team"):
+        """Create a project+group with a fake git repo in shared/."""
+        manager.create_project(project_name)
+        manager.create_group(group_name)
+        manager.get_project_path(project_name).write_text("- [ ] original\n")
+        manager.add_project_to_group(project_name, group_name)
+        # Init a bare git dir so sync doesn't skip the group
+        group_dir = manager.shared_dir / group_name
+        (group_dir / ".git").mkdir(exist_ok=True)
+        return group_dir
+
+    def test_remote_changes_merged_to_data(self, manager):
+        """When shared/ file has new content from a pull, it merges into data/."""
+        group_dir = self._setup_group_with_git(manager)
+
+        # Simulate a remote change arriving in shared/ after pull
+        shared_file = group_dir / "proj.todo"
+        shared_file.write_text("- [ ] original\n- [ ] from remote\n")
+
+        with patch("todo.sync.shared_sync.SharedSync.smart_fetch",
+                    return_value={"status": "behind", "local_sha": "a", "remote_sha": "b"}), \
+             patch("todo.sync.shared_sync.SharedSync.pull", return_value=True), \
+             patch("todo.sync.shared_sync.SharedSync.push", return_value=True), \
+             patch("todo.sync.shared_sync.SharedSync._commit_all_changes", return_value=True):
+            result = manager.sync()
+
+        data_content = manager.get_project_path("proj").read_text()
+        assert "from remote" in data_content
+        assert result["group_errors"] == {}
+
+    def test_remote_changes_merged_to_directory_project(self, manager):
+        """When project uses dir/index.todo layout, remote changes go to index.todo not a flat file."""
+        manager.create_project("myproj")
+        manager.create_project("myproj/sub")  # triggers migration to directory layout
+        manager.create_group("team")
+        manager.get_project_path("myproj").write_text("- [ ] local task\n")
+        manager.add_project_to_group("myproj", "team")
+
+        group_dir = manager.shared_dir / "team"
+        (group_dir / ".git").mkdir(exist_ok=True)
+
+        # Simulate remote pushing a new task
+        shared_file = group_dir / "myproj.todo"
+        shared_file.write_text("- [ ] local task\n- [ ] remote task\n")
+
+        with patch("todo.sync.shared_sync.SharedSync.smart_fetch",
+                    return_value={"status": "behind", "local_sha": "a", "remote_sha": "b"}), \
+             patch("todo.sync.shared_sync.SharedSync.pull", return_value=True), \
+             patch("todo.sync.shared_sync.SharedSync.push", return_value=True), \
+             patch("todo.sync.shared_sync.SharedSync._commit_all_changes", return_value=True):
+            result = manager.sync()
+
+        # Should update the index.todo, not create a flat myproj.todo
+        index_path = manager.data_dir / "myproj" / "index.todo"
+        flat_path = manager.data_dir / "myproj.todo"
+        assert index_path.exists()
+        assert not flat_path.exists()
+        assert "remote task" in index_path.read_text()
+
+    def test_new_project_from_remote(self, manager):
+        """A .todo file in shared/ that doesn't exist in data/ gets created."""
+        manager.create_group("team")
+        group_dir = manager.shared_dir / "team"
+        (group_dir / ".git").mkdir(exist_ok=True)
+        reg = manager.load_registry()
+        reg["groups"]["team"]["projects"].append("newproj")
+        manager.save_registry(reg)
+
+        # Simulate remote having a project we don't have locally
+        (group_dir / "newproj.todo").write_text("- [ ] remote only\n")
+
+        with patch("todo.sync.shared_sync.SharedSync.smart_fetch",
+                    return_value={"status": "behind", "local_sha": "a", "remote_sha": "b"}), \
+             patch("todo.sync.shared_sync.SharedSync.pull", return_value=True), \
+             patch("todo.sync.shared_sync.SharedSync.push", return_value=True), \
+             patch("todo.sync.shared_sync.SharedSync._commit_all_changes", return_value=True):
+            result = manager.sync()
+
+        dst = manager.data_dir / "newproj.todo"
+        assert dst.exists()
+        assert "remote only" in dst.read_text()
+
+    def test_data_changes_pushed_to_shared(self, manager):
+        """Local data/ edits propagate to shared/ even when remote is up_to_date."""
+        self._setup_group_with_git(manager)
+
+        # Edit data locally
+        manager.get_project_path("proj").write_text("- [ ] edited locally\n")
+
+        with patch("todo.sync.shared_sync.SharedSync.smart_fetch",
+                    return_value={"status": "up_to_date", "local_sha": "a", "remote_sha": "a"}), \
+             patch("todo.sync.shared_sync.SharedSync.push", return_value=True), \
+             patch("todo.sync.shared_sync.SharedSync._commit_all_changes", return_value=True):
+            result = manager.sync()
+
+        shared_file = manager.shared_dir / "team" / "proj.todo"
+        assert "edited locally" in shared_file.read_text()
+
+
 class TestNestedSubprojects:
     """Test nested subproject support with '/' in project names."""
 

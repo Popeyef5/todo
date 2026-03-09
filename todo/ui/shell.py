@@ -55,6 +55,7 @@ class TodoShell:
         self.tasks: List[TaskRef] = []  # Numbered task results
         self.dirty = False
         self.stage_view = False
+        self.hide_done = False
         self._bg_sync = None  # BackgroundSync instance
 
         # Load custom themes from ~/.todo/themes/, then apply saved preference
@@ -87,7 +88,7 @@ class TodoShell:
             # Tab completion
             commands = [
                 'help', 'projects', 'use', 'ls', 'show', 'add', 'addc',
-                'toggle', 'check', 'uncheck', 'edit', 'rm', 'new', 'find', 'group',
+                'toggle', 'check', 'uncheck', 'edit', 'rm', 'project', 'find', 'hide', 'group',
                 'setup', 'sync', 'push', 'pull', 'config', 'nuke', 'link',
                 'unlink', 'status', 'theme', 'stage', 'unstage', 'staged',
                 'clear', 'quit', 'q', 'exit',
@@ -154,12 +155,13 @@ class TodoShell:
                 'toggle': self._cmd_toggle,
                 't': self._cmd_toggle,
                 'find': self._cmd_find,
+                'hide': self._cmd_hide,
                 'check': self._cmd_check,
                 'uncheck': self._cmd_uncheck,
                 'edit': self._cmd_edit,
                 'e': self._cmd_edit,
                 'rm': self._cmd_rm,
-                'new': self._cmd_new,
+                'project': self._cmd_project,
                 'addc': self._cmd_addc,
                 'group': self._cmd_group,
                 'setup': self._cmd_setup,
@@ -225,6 +227,8 @@ class TodoShell:
         if self.stage_view:
             staged_ids = self.manager.load_staged_ids()
             self.tasks = [t for t in self.tasks if t.task_id in staged_ids]
+        if self.hide_done:
+            self.tasks = [t for t in self.tasks if not t.checked]
 
     def _print_tasks(self, tasks: List[TaskRef] = None):
         """Print numbered task list"""
@@ -292,6 +296,7 @@ class TodoShell:
             f"  {render.color('Viewing', S.BOLD, S.BRIGHT_WHITE)}",
             f"    {render.color('ls', S.BRIGHT_CYAN)}                  List tasks in current scope",
             f"    {render.color('find', S.BRIGHT_CYAN)} {render.color('<text>', S.DIM)}        Search tasks by text",
+            f"    {render.color('hide', S.BRIGHT_CYAN)}                Toggle hiding completed tasks",
             f"    {render.color('show', S.BRIGHT_CYAN)} {render.color('<n>', S.DIM)}           Show details of task #n",
             f"    {render.color('status', S.BRIGHT_CYAN)}              Show sync and project status",
             "",
@@ -312,7 +317,8 @@ class TodoShell:
             f"    {render.color('staged', S.BRIGHT_CYAN)}               Show staged tasks",
             "",
             f"  {render.color('Projects', S.BOLD, S.BRIGHT_WHITE)}",
-            f"    {render.color('new', S.BRIGHT_CYAN)} {render.color('<name>', S.DIM)}         Create a new project",
+            f"    {render.color('project new', S.BRIGHT_CYAN)} {render.color('<name>', S.DIM)}      Create a new project",
+            f"    {render.color('project delete', S.BRIGHT_CYAN)} {render.color('<name>', S.DIM)}   Delete a project",
             f"    {render.color('link', S.BRIGHT_CYAN)} {render.color('<project> [path]', S.DIM)}    Link TODO.md in directory",
             f"    {render.color('unlink', S.BRIGHT_CYAN)} {render.color('<project> [path]', S.DIM)}  Unlink TODO.md from directory",
             "",
@@ -343,7 +349,7 @@ class TodoShell:
     def _cmd_projects(self, args):
         project_list = self.manager.list_projects()
         if not project_list:
-            print(render.dim("  No projects found. Use 'new <name>' to create one."))
+            print(render.dim("  No projects found. Use 'project new <name>' to create one."))
             return
 
         projects = []
@@ -401,6 +407,15 @@ class TodoShell:
             print(render.dim(f"  No tasks matching '{' '.join(args)}'"))
             return
         self._print_tasks(matches)
+
+    def _cmd_hide(self, args):
+        self.hide_done = not self.hide_done
+        self._refresh_tasks()
+        if self.hide_done:
+            print(render.success("Hiding completed tasks"))
+        else:
+            print(render.success("Showing all tasks"))
+        self._print_tasks()
 
     def _cmd_show(self, args):
         if not args:
@@ -651,16 +666,38 @@ class TodoShell:
         else:
             print(render.error("Failed to remove task"))
 
-    def _cmd_new(self, args):
+    def _cmd_project(self, args):
         if not args:
-            print(render.error("Usage: new <project-name>"))
+            print(render.error("Usage: project <new|delete> ..."))
             return
-
-        name = args[0]
-        self.manager.create_project(name)
-        print(render.success(f"Created project: {name}"))
-        self.current_project = name
-        self._refresh_tasks()
+        sub = args[0].lower()
+        if sub == 'new':
+            if len(args) < 2:
+                print(render.error("Usage: project new <name>"))
+                return
+            name = args[1]
+            self.manager.create_project(name)
+            print(render.success(f"Created project: {name}"))
+            self.current_project = name
+            self._refresh_tasks()
+        elif sub == 'delete':
+            if len(args) < 2:
+                print(render.error("Usage: project delete <name>"))
+                return
+            name = args[1]
+            confirm = self._prompt(f"  Delete project '{name}' and all its tasks? [y/N]")
+            if confirm.lower() != 'y':
+                print(render.dim("  (cancelled)"))
+                return
+            if self.manager.remove_project(name):
+                print(render.success(f"Deleted project: {name}"))
+                if self.current_project == name:
+                    self.current_project = None
+                self._refresh_tasks()
+            else:
+                print(render.error(f"Project '{name}' not found"))
+        else:
+            print(render.error(f"Unknown project action: {sub}"))
 
     def _cmd_addc(self, args):
         if len(args) < 2:

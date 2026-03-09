@@ -528,6 +528,9 @@ class TodoManager:
             if group_status == "error":
                 group_errors[group_name] = "fetch failed"
                 continue
+            if group_status == "no_commits":
+                # No local commits yet — skip pull/merge, step 6+8 will do initial copy+push
+                continue
             if group_status in ("behind", "diverged"):
                 if not shared.pull():
                     group_errors[group_name] = "pull failed"
@@ -539,7 +542,8 @@ class TodoManager:
             # 4. Merge pulled group files → data/
             for todo_file in group_dir.rglob("*.todo"):
                 rel = todo_file.relative_to(group_dir)
-                dst = self.data_dir / rel
+                project_name = str(rel.with_suffix(""))
+                dst = self.get_project_path(project_name)
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 if dst.exists():
                     remote_content = todo_file.read_text()
@@ -586,6 +590,7 @@ class TodoManager:
                             shutil.copy2(src, dst)
                     else:
                         shutil.copy2(src, dst)
+                    self.conflict_manager.update_checksum(dst)
 
         # 7. Commit+push main
         if (self.home_dir / ".git").exists():
