@@ -157,6 +157,7 @@ class Theme:
     input_separator: str = ""                                  # char between output/input, "" = off
     border_tee_left: str = "├"       # left T-junction for separator
     border_tee_right: str = "┤"      # right T-junction for separator
+    status_bar_position: str = "middle"  # "top", "middle", or "bottom"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -594,6 +595,11 @@ def load_theme_from_yaml(path: Path) -> Optional[Theme]:
     if tui_banner_mid_align not in ("left", "center", "right"):
         tui_banner_mid_align = "center"
 
+    # Status bar position
+    status_bar_position = str(data.get("status_bar_position", "middle")).lower()
+    if status_bar_position not in ("top", "middle", "bottom"):
+        status_bar_position = "middle"
+
     return Theme(
         name=name,
         curses_pairs=curses_pairs,
@@ -604,6 +610,7 @@ def load_theme_from_yaml(path: Path) -> Optional[Theme]:
         tui_banner_mid_align=tui_banner_mid_align,
         tui_bordered=tui_bordered,
         input_separator=input_separator,
+        status_bar_position=status_bar_position,
         **colors,
         **elements,
     )

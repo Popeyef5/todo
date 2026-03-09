@@ -132,18 +132,32 @@ def task_line(index: int, checked: bool, text: str, project: str = "", file: str
 
 
 def project_tree(projects: list, current: str = None) -> str:
-    """Render a tree of projects"""
+    """Render a tree of projects with nested hierarchy based on '/' in names"""
     t = get_theme()
+    sorted_projects = sorted(projects, key=lambda p: p["name"])
     lines = []
-    for i, p in enumerate(projects):
-        is_last = i == len(projects) - 1
+    for i, p in enumerate(sorted_projects):
+        full_name = p["name"]
+        depth = full_name.count("/")
+        display_name = full_name.rsplit("/", 1)[-1] if "/" in full_name else full_name
+        # Determine if this is the last sibling at its depth level
+        is_last = True
+        prefix = full_name.rsplit("/", 1)[0] + "/" if "/" in full_name else ""
+        for j in range(i + 1, len(sorted_projects)):
+            other = sorted_projects[j]["name"]
+            if other.startswith(prefix) and other.count("/") == depth:
+                is_last = False
+                break
+            if not other.startswith(prefix):
+                break
         branch = t.tree_last if is_last else t.tree_branch
-        marker = color(" ●", _s(t.accent)) if p["name"] == current else "  "
-        name = color(p["name"], _s(t.text_bold)) if p["name"] == current else color(p["name"], _s(t.text))
+        marker = color(" ●", _s(t.accent)) if full_name == current else "  "
+        name_str = color(display_name, _s(t.text_bold)) if full_name == current else color(display_name, _s(t.text))
         todo_count = p.get("todo_count", 0)
         count_str = color(f"({todo_count} todos)", _s(t.dim))
         ptype = color(f"[{p.get('type', 'dir')}]", _s(t.dim))
-        lines.append(f"  {color(branch, _s(t.dim))} {name} {count_str} {ptype}{marker}")
+        indent = "  " + "    " * depth
+        lines.append(f"{indent}{color(branch, _s(t.dim))} {name_str} {count_str} {ptype}{marker}")
     return "\n".join(lines)
 
 

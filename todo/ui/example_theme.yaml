@@ -93,9 +93,14 @@ elements:
 # ── TUI layout ───────────────────────────────────────────────────────
 # tui_bordered: true/false — full borders around task & terminal panels
 # input_separator: character for line between output and input ("none" to disable)
+# status_bar_position: where the mode/keybindings bar is drawn
+#   "top"    — very first row of the screen
+#   "middle" — between the task panel and the REPL terminal (default)
+#   "bottom" — very last row of the screen
 
 tui_bordered: true
 input_separator: "═"
+status_bar_position: middle
 
 # ── TUI banners ──────────────────────────────────────────────────────
 # Optional ASCII art (max 14 lines for top, 6 for mid), auto-centered by default.

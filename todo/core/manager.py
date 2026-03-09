@@ -63,12 +63,32 @@ class TodoManager:
     # ── Project CRUD ──────────────────────────────────────────
 
     def create_project(self, name: str) -> Path:
-        """Create a new project: data/<name>.todo and register it"""
+        """Create a new project: data/<name>.todo and register it.
+
+        Supports nested subprojects via '/' in the name (e.g., "myproject/backend").
+        If the parent exists as a flat file, it is auto-migrated to a directory
+        with an index.todo file.
+        """
         registry = self.load_registry()
         if name in registry["projects"]:
             raise ValueError(f"Project '{name}' already exists")
 
-        todo_path = self.data_dir / f"{name}.todo"
+        if "/" in name:
+            parent = name.rsplit("/", 1)[0]
+            parent_flat = self.data_dir / f"{parent}.todo"
+            parent_dir = self.data_dir / parent
+
+            # Auto-migrate parent from flat file to directory with index.todo
+            if parent_flat.exists() and parent_flat.is_file():
+                parent_dir.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(parent_flat), str(parent_dir / "index.todo"))
+
+            # Ensure all intermediate directories exist
+            todo_path = self.data_dir / f"{name}.todo"
+            todo_path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            todo_path = self.data_dir / f"{name}.todo"
+
         if not todo_path.exists():
             todo_path.write_text("")
         ensure_task_ids(todo_path)
@@ -81,11 +101,18 @@ class TodoManager:
         return todo_path
 
     def list_projects(self) -> List[Dict]:
-        """Return list of project info dicts"""
+        """Return list of project info dicts.
+
+        Uses registry as primary source, then discovers additional projects
+        by scanning data/ recursively.
+        """
         registry = self.load_registry()
         projects = []
+        seen_names = set()
+
+        # Primary: from registry
         for name, info in registry["projects"].items():
-            todo_path = self.data_dir / f"{name}.todo"
+            todo_path = self.get_project_path(name)
             todo_count = 0
             if todo_path.exists():
                 for line in todo_path.read_text().splitlines():
@@ -99,6 +126,33 @@ class TodoManager:
                 "shared_in": info.get("shared_in", []),
                 "todo_count": todo_count,
             })
+            seen_names.add(name)
+
+        # Secondary: filesystem discovery
+        if self.data_dir.exists():
+            for todo_file in self.data_dir.rglob("*.todo"):
+                rel = todo_file.relative_to(self.data_dir)
+                parts = rel.parts
+                if parts[-1] == "index.todo":
+                    name = str(Path(*parts[:-1]))
+                else:
+                    name = str(rel.with_suffix(""))
+                if name in seen_names:
+                    continue
+                seen_names.add(name)
+                todo_count = 0
+                for line in todo_file.read_text().splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("- [ ]"):
+                        todo_count += 1
+                projects.append({
+                    "name": name,
+                    "path": str(todo_file),
+                    "created": "",
+                    "shared_in": [],
+                    "todo_count": todo_count,
+                })
+
         return projects
 
     def remove_project(self, name: str) -> bool:
@@ -107,7 +161,7 @@ class TodoManager:
         if name not in registry["projects"]:
             return False
 
-        todo_path = self.data_dir / f"{name}.todo"
+        todo_path = self.get_project_path(name)
         if todo_path.exists():
             todo_path.unlink()
 
@@ -125,27 +179,53 @@ class TodoManager:
         return True
 
     def get_project_path(self, name: str) -> Path:
-        """Return Path to the .todo file in data/"""
-        return self.data_dir / f"{name}.todo"
+        """Return Path to the .todo file in data/.
+
+        Resolution order:
+        1. data/<name>.todo (flat file)
+        2. data/<name>/index.todo (directory with index)
+        3. data/<name>.todo as default (for creation)
+        """
+        flat = self.data_dir / f"{name}.todo"
+        if flat.exists():
+            return flat
+        index = self.data_dir / name / "index.todo"
+        if index.exists():
+            return index
+        return flat
 
     def get_all_project_paths(self) -> List[tuple]:
         """Return list of (name, Path) for all projects (data/ and shared/)"""
         paths = []
-        registry = self.load_registry()
+        seen_names = set()
 
-        for name in registry["projects"]:
-            paths.append((name, self.data_dir / f"{name}.todo"))
+        # Discover all .todo files under data/ recursively
+        if self.data_dir.exists():
+            for todo_file in self.data_dir.rglob("*.todo"):
+                rel = todo_file.relative_to(self.data_dir)
+                parts = rel.parts
+                if parts[-1] == "index.todo":
+                    name = str(Path(*parts[:-1]))
+                else:
+                    name = str(rel.with_suffix(""))
+                if name not in seen_names:
+                    paths.append((name, todo_file))
+                    seen_names.add(name)
 
-        # Also include any files in shared/ that aren't already in data/
+        # Also include any files in shared/ that aren't already found
         if self.shared_dir.exists():
-            known_names = set(registry["projects"].keys())
             for group_dir in self.shared_dir.iterdir():
                 if group_dir.is_dir() and not group_dir.name.startswith("."):
-                    for todo_file in group_dir.glob("*.todo"):
-                        stem = todo_file.stem
-                        if stem not in known_names:
-                            paths.append((stem, todo_file))
-                            known_names.add(stem)
+                    for todo_file in group_dir.rglob("*.todo"):
+                        rel = todo_file.relative_to(group_dir)
+                        parts = rel.parts
+                        if parts[-1] == "index.todo":
+                            name = str(Path(*parts[:-1]))
+                        else:
+                            name = str(rel.with_suffix(""))
+                        if name not in seen_names:
+                            paths.append((name, todo_file))
+                            seen_names.add(name)
 
         return paths
 
@@ -197,8 +277,9 @@ class TodoManager:
         if project_name in registry["groups"][group_name]["projects"]:
             raise ValueError(f"Project '{project_name}' is already in group '{group_name}'")
 
-        src = self.data_dir / f"{project_name}.todo"
+        src = self.get_project_path(project_name)
         dst = self.shared_dir / group_name / f"{project_name}.todo"
+        dst.parent.mkdir(parents=True, exist_ok=True)
         if src.exists():
             shutil.copy2(src, dst)
 
@@ -234,8 +315,10 @@ class TodoManager:
             if remote and not group_dir.exists():
                 sync = SharedSync(group_dir, self.config)
                 if sync.clone(remote):
-                    for todo_file in group_dir.glob("*.todo"):
-                        dst = self.data_dir / todo_file.name
+                    for todo_file in group_dir.rglob("*.todo"):
+                        rel = todo_file.relative_to(group_dir)
+                        dst = self.data_dir / rel
+                        dst.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(todo_file, dst)
                     reconstituted.append(group_name)
 
@@ -280,9 +363,15 @@ class TodoManager:
             "created": datetime.now().isoformat(),
         }
 
-        for todo_file in group_dir.glob("*.todo"):
-            name = todo_file.stem
-            dst = self.data_dir / f"{name}.todo"
+        for todo_file in group_dir.rglob("*.todo"):
+            rel = todo_file.relative_to(group_dir)
+            parts = rel.parts
+            if parts[-1] == "index.todo":
+                name = str(Path(*parts[:-1]))
+            else:
+                name = str(rel.with_suffix(""))
+            dst = self.data_dir / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(todo_file, dst)
             ensure_task_ids(dst)
 
@@ -313,8 +402,9 @@ class TodoManager:
         group_dir.mkdir(parents=True, exist_ok=True)
 
         # Copy file to shared/
-        src = self.data_dir / f"{project_name}.todo"
+        src = self.get_project_path(project_name)
         dst = group_dir / f"{project_name}.todo"
+        dst.parent.mkdir(parents=True, exist_ok=True)
         if src.exists():
             shutil.copy2(src, dst)
 
@@ -366,9 +456,15 @@ class TodoManager:
         }
 
         # Copy .todo files from cloned group into data/
-        for todo_file in group_dir.glob("*.todo"):
-            name = todo_file.stem
-            dst = self.data_dir / f"{name}.todo"
+        for todo_file in group_dir.rglob("*.todo"):
+            rel = todo_file.relative_to(group_dir)
+            parts = rel.parts
+            if parts[-1] == "index.todo":
+                name = str(Path(*parts[:-1]))
+            else:
+                name = str(rel.with_suffix(""))
+            dst = self.data_dir / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(todo_file, dst)
 
             registry["groups"][group_name]["projects"].append(name)
@@ -441,8 +537,10 @@ class TodoManager:
                 continue
 
             # 4. Merge pulled group files → data/
-            for todo_file in group_dir.glob("*.todo"):
-                dst = self.data_dir / todo_file.name
+            for todo_file in group_dir.rglob("*.todo"):
+                rel = todo_file.relative_to(group_dir)
+                dst = self.data_dir / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
                 if dst.exists():
                     remote_content = todo_file.read_text()
                     conflict = self.conflict_manager.check_conflicts(dst, remote_content)
@@ -472,9 +570,10 @@ class TodoManager:
             if not group_dir.exists():
                 continue
             for project_name in group_info.get("projects", []):
-                src = self.data_dir / f"{project_name}.todo"
+                src = self.get_project_path(project_name)
                 if src.exists():
                     dst = group_dir / f"{project_name}.todo"
+                    dst.parent.mkdir(parents=True, exist_ok=True)
                     if dst.exists():
                         local_content = src.read_text()
                         conflict = self.conflict_manager.check_conflicts(dst, local_content)
@@ -539,7 +638,7 @@ class TodoManager:
         if target_dir is None:
             target_dir = Path.cwd()
 
-        todo_path = self.data_dir / f"{project_name}.todo"
+        todo_path = self.get_project_path(project_name)
         symlink_path = target_dir / "TODO.md"
 
         if symlink_path.exists() or symlink_path.is_symlink():
@@ -561,7 +660,7 @@ class TodoManager:
             return False
 
         target = Path(os.readlink(symlink_path))
-        expected = self.data_dir / f"{project_name}.todo"
+        expected = self.get_project_path(project_name)
 
         if target.resolve() != expected.resolve():
             raise ValueError(f"TODO.md points to {target}, not {expected}")

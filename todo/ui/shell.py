@@ -87,7 +87,7 @@ class TodoShell:
             # Tab completion
             commands = [
                 'help', 'projects', 'use', 'ls', 'show', 'add', 'addc',
-                'toggle', 'check', 'uncheck', 'edit', 'rm', 'new', 'group',
+                'toggle', 'check', 'uncheck', 'edit', 'rm', 'new', 'find', 'group',
                 'setup', 'sync', 'push', 'pull', 'config', 'nuke', 'link',
                 'unlink', 'status', 'theme', 'stage', 'unstage', 'staged',
                 'clear', 'quit', 'q', 'exit',
@@ -153,6 +153,7 @@ class TodoShell:
                 'add': self._cmd_add,
                 'toggle': self._cmd_toggle,
                 't': self._cmd_toggle,
+                'find': self._cmd_find,
                 'check': self._cmd_check,
                 'uncheck': self._cmd_uncheck,
                 'edit': self._cmd_edit,
@@ -216,8 +217,9 @@ class TodoShell:
             if path and path.exists():
                 self.tasks = parse_tasks_from_file(path, self.current_project)
         else:
-            # Global view: all tasks from all projects
-            for name, path in self.manager.get_all_project_paths():
+            # Global view: all tasks from all projects, sorted so parents come before children
+            project_paths = sorted(self.manager.get_all_project_paths(), key=lambda x: x[0])
+            for name, path in project_paths:
                 tasks = parse_tasks_from_file(path, name)
                 self.tasks.extend(tasks)
         if self.stage_view:
@@ -231,20 +233,34 @@ class TodoShell:
             print(render.dim("  No tasks found"))
             return
 
-        # Group by file
-        current_file = None
+        # Group by project with nested hierarchy
         current_project = None
+        seen_projects = set()
         lines = []
 
         for i, task in enumerate(items, 1):
-            file_label = task.display_file
-            if task.todo_path != current_file or task.project_name != current_project:
-                current_file = task.todo_path
+            if task.project_name != current_project:
                 current_project = task.project_name
-                if lines:
-                    lines.append("")
-                loc = f"{task.project_name} › {file_label}" if task.project_name else file_label
-                lines.append(f"  {render.color(loc, S.BLUE, S.BOLD)}")
+                if current_project not in seen_projects:
+                    seen_projects.add(current_project)
+                    # Emit ancestor headers if not yet seen
+                    parts = current_project.split("/")
+                    for j in range(1, len(parts)):
+                        ancestor = "/".join(parts[:j])
+                        if ancestor not in seen_projects:
+                            seen_projects.add(ancestor)
+                            depth = ancestor.count("/")
+                            display_name = ancestor.rsplit("/", 1)[-1] if "/" in ancestor else ancestor
+                            header_indent = "  " + "  " * depth
+                            if lines:
+                                lines.append("")
+                            lines.append(f"{header_indent}{render.color(display_name, S.BLUE, S.BOLD)}")
+                    depth = current_project.count("/")
+                    display_name = current_project.rsplit("/", 1)[-1] if "/" in current_project else current_project
+                    header_indent = "  " + "  " * depth
+                    if lines:
+                        lines.append("")
+                    lines.append(f"{header_indent}{render.color(display_name, S.BLUE, S.BOLD)}")
 
             lines.append(render.task_line(i, task.checked, task.text))
 
@@ -275,6 +291,7 @@ class TodoShell:
             "",
             f"  {render.color('Viewing', S.BOLD, S.BRIGHT_WHITE)}",
             f"    {render.color('ls', S.BRIGHT_CYAN)}                  List tasks in current scope",
+            f"    {render.color('find', S.BRIGHT_CYAN)} {render.color('<text>', S.DIM)}        Search tasks by text",
             f"    {render.color('show', S.BRIGHT_CYAN)} {render.color('<n>', S.DIM)}           Show details of task #n",
             f"    {render.color('status', S.BRIGHT_CYAN)}              Show sync and project status",
             "",
@@ -372,6 +389,18 @@ class TodoShell:
     def _cmd_ls(self, args):
         self._refresh_tasks()
         self._print_tasks()
+
+    def _cmd_find(self, args):
+        if not args:
+            print(render.error("Usage: find <text>"))
+            return
+        query = ' '.join(args).lower()
+        self._refresh_tasks()
+        matches = [t for t in self.tasks if query in t.text.lower()]
+        if not matches:
+            print(render.dim(f"  No tasks matching '{' '.join(args)}'"))
+            return
+        self._print_tasks(matches)
 
     def _cmd_show(self, args):
         if not args:

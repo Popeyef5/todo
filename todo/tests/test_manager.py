@@ -175,6 +175,118 @@ class TestSyncDataToShared:
         assert result["group_errors"] == {}
 
 
+class TestNestedSubprojects:
+    """Test nested subproject support with '/' in project names."""
+
+    def test_create_nested_project(self, manager):
+        path = manager.create_project("myproject")
+        sub_path = manager.create_project("myproject/backend")
+        assert sub_path.exists()
+        assert sub_path.name == "backend.todo"
+        reg = manager.load_registry()
+        assert "myproject/backend" in reg["projects"]
+
+    def test_auto_migrate_parent_to_directory(self, manager):
+        """Creating a subproject auto-migrates parent flat file to dir/index.todo."""
+        parent_path = manager.create_project("myproject")
+        parent_path.write_text("- [ ] parent task\n")
+
+        # The flat file should exist
+        assert (manager.data_dir / "myproject.todo").exists()
+
+        # Create subproject — should migrate parent
+        manager.create_project("myproject/backend")
+
+        # Flat file should be gone, replaced by directory
+        assert not (manager.data_dir / "myproject.todo").exists()
+        index = manager.data_dir / "myproject" / "index.todo"
+        assert index.exists()
+        assert "parent task" in index.read_text()
+
+        # Subproject file should exist
+        assert (manager.data_dir / "myproject" / "backend.todo").exists()
+
+    def test_get_project_path_resolves_index(self, manager):
+        """After migration, get_project_path resolves to index.todo."""
+        manager.create_project("myproject")
+        (manager.data_dir / "myproject.todo").write_text("- [ ] task\n")
+        manager.create_project("myproject/sub")
+
+        path = manager.get_project_path("myproject")
+        assert path.name == "index.todo"
+        assert "task" in path.read_text()
+
+    def test_get_project_path_flat_file(self, manager):
+        """Flat projects still resolve to <name>.todo."""
+        manager.create_project("flat")
+        path = manager.get_project_path("flat")
+        assert path.name == "flat.todo"
+
+    def test_list_projects_includes_nested(self, manager):
+        manager.create_project("myproject")
+        manager.create_project("myproject/backend")
+        manager.create_project("myproject/frontend")
+        projects = manager.list_projects()
+        names = [p["name"] for p in projects]
+        assert "myproject" in names
+        assert "myproject/backend" in names
+        assert "myproject/frontend" in names
+
+    def test_get_all_project_paths_includes_nested(self, manager):
+        manager.create_project("myproject")
+        manager.create_project("myproject/backend")
+        paths = manager.get_all_project_paths()
+        names = [name for name, _ in paths]
+        assert "myproject" in names
+        assert "myproject/backend" in names
+
+    def test_deeply_nested(self, manager):
+        """Support deep nesting like myproject/backend/api."""
+        manager.create_project("deep")
+        manager.create_project("deep/level1")
+        manager.create_project("deep/level1/level2")
+        paths = manager.get_all_project_paths()
+        names = [name for name, _ in paths]
+        assert "deep" in names
+        assert "deep/level1" in names
+        assert "deep/level1/level2" in names
+
+    def test_add_tasks_to_nested_project(self, manager):
+        """Tasks can be added to nested projects."""
+        from todo.ui.tasks import parse_tasks_from_file, add_task_to_file
+        manager.create_project("proj")
+        manager.create_project("proj/sub")
+        path = manager.get_project_path("proj/sub")
+        add_task_to_file(path, "nested task")
+        tasks = parse_tasks_from_file(path, "proj/sub")
+        assert len(tasks) == 1
+        assert tasks[0].text == "nested task"
+        assert tasks[0].project_name == "proj/sub"
+
+    def test_remove_nested_project(self, manager):
+        manager.create_project("proj")
+        manager.create_project("proj/sub")
+        path = manager.get_project_path("proj/sub")
+        path.write_text("- [ ] task\n")
+        assert manager.remove_project("proj/sub")
+        assert not path.exists()
+        reg = manager.load_registry()
+        assert "proj/sub" not in reg["projects"]
+
+    def test_filesystem_discovery(self, manager):
+        """Projects created on filesystem (e.g., via sync) are discovered."""
+        # Create a nested file directly on filesystem without registry
+        nested_dir = manager.data_dir / "discovered" / "child"
+        nested_dir.mkdir(parents=True)
+        (nested_dir.parent / "index.todo").write_text("- [ ] parent task\n")
+        (nested_dir.parent / "child.todo").write_text("- [ ] child task\n")
+
+        projects = manager.list_projects()
+        names = [p["name"] for p in projects]
+        assert "discovered" in names
+        assert "discovered/child" in names
+
+
 class TestNuke:
 
     def test_nuke_removes_everything(self, manager):

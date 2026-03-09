@@ -190,18 +190,33 @@ def main():
                 tasks = parse_tasks_from_file(path, args.project)
             else:
                 tasks = []
-                for name, path in manager.get_all_project_paths():
+                project_paths = sorted(manager.get_all_project_paths(), key=lambda x: x[0])
+                for name, path in project_paths:
                     tasks.extend(parse_tasks_from_file(path, name))
             if not tasks:
                 print("No tasks found")
             else:
                 current_project = None
+                seen_projects = set()
                 for i, task in enumerate(tasks, 1):
                     if task.project_name != current_project:
                         current_project = task.project_name
-                        print(f"\n  {current_project}")
+                        if current_project not in seen_projects:
+                            seen_projects.add(current_project)
+                            parts = current_project.split("/")
+                            for j in range(1, len(parts)):
+                                ancestor = "/".join(parts[:j])
+                                if ancestor not in seen_projects:
+                                    seen_projects.add(ancestor)
+                                    depth = ancestor.count("/")
+                                    display = ancestor.rsplit("/", 1)[-1] if "/" in ancestor else ancestor
+                                    print(f"\n{'  ' * (depth + 1)}{display}")
+                            depth = current_project.count("/")
+                            display = current_project.rsplit("/", 1)[-1] if "/" in current_project else current_project
+                            print(f"\n{'  ' * (depth + 1)}{display}")
                     status = "[x]" if task.checked else "[ ]"
-                    print(f"  {i:3d}. {status} {task.text}")
+                    indent = "  " * (current_project.count("/") + 1)
+                    print(f"{indent}{i:3d}. {status} {task.text}")
 
         elif args.command == 'show':
             from todo.ui.tasks import parse_tasks_from_file
@@ -329,7 +344,8 @@ def main():
                 print("No projects found. Use 'todo new <name>' to create one.")
             else:
                 print("Projects:")
-                for p in project_list:
+                sorted_projects = sorted(project_list, key=lambda p: p["name"])
+                for p in sorted_projects:
                     try:
                         tasks = parse_tasks_from_file(p["path"], p["name"])
                         count = len(tasks)
@@ -337,7 +353,10 @@ def main():
                         count = 0
                     shared = p.get("shared_in", [])
                     ptype = f"shared: {', '.join(shared)}" if shared else "local"
-                    print(f"  {p['name']} ({count} tasks, {ptype})")
+                    depth = p["name"].count("/")
+                    display_name = p["name"].rsplit("/", 1)[-1] if "/" in p["name"] else p["name"]
+                    indent = "  " + "  " * depth
+                    print(f"{indent}{display_name} ({count} tasks, {ptype})")
 
         elif args.command == 'status':
             from todo.ui.tasks import parse_tasks_from_file

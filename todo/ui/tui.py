@@ -85,6 +85,9 @@ class TodoTUI:
         # Staging ground
         self.stage_view = False
 
+        # Find filter (modal mode)
+        self.find_filter = ''
+
     def run(self):
         """Entry point"""
         curses.wrapper(self._main)
@@ -196,16 +199,33 @@ class TodoTUI:
             self.task_h = max(remaining // 2, 3)
             self.output_h = max(remaining - self.task_h, 1)
 
-        # Row positions (top to bottom)
-        self.top_banner_y = 0
-        self.task_y = self.top_banner_h
-        self.mid_banner_y = self.task_y + self.task_h
-        self.status_y = self.mid_banner_y + self.mid_banner_h
-        self.term_top_y = self.status_y + 1           # terminal top border
+        # Row positions (top to bottom), adjusted by status_bar_position
+        pos = theme.status_bar_position
+        if pos == "top":
+            self.status_y = 0
+            self.top_banner_y = 1
+            self.task_y = 1 + self.top_banner_h
+            self.mid_banner_y = self.task_y + self.task_h
+            self.term_top_y = self.mid_banner_y + self.mid_banner_h
+        elif pos == "bottom":
+            self.top_banner_y = 0
+            self.task_y = self.top_banner_h
+            self.mid_banner_y = self.task_y + self.task_h
+            self.term_top_y = self.mid_banner_y + self.mid_banner_h
+        else:  # "middle" (default)
+            self.top_banner_y = 0
+            self.task_y = self.top_banner_h
+            self.mid_banner_y = self.task_y + self.task_h
+            self.status_y = self.mid_banner_y + self.mid_banner_h
+            self.term_top_y = self.status_y + 1
+
         self.output_y = self.term_top_y + 1            # output content start
         self.sep_y = self.output_y + self.output_h if has_sep else None
         self.input_y = (self.sep_y + 1) if has_sep else (self.output_y + self.output_h)
         self.term_bottom_y = self.input_y + 1          # terminal bottom border
+
+        if pos == "bottom":
+            self.status_y = self.term_bottom_y + 1
 
         self.width = w
         self.height = h
@@ -346,6 +366,8 @@ class TodoTUI:
         unchecked = sum(1 for t in self.tasks if not t.checked)
         checked = sum(1 for t in self.tasks if t.checked)
         title = f" {scope} — {unchecked} pending, {checked} done "
+        if self.find_filter:
+            title += f"[find: {self.find_filter}] "
 
         theme = get_theme()
         bordered = theme.tui_bordered
@@ -380,15 +402,25 @@ class TodoTUI:
             seen_projects = set()
             nav_lookup = {tuple(item): idx for idx, item in enumerate(self.nav_items)}
             for i, task in enumerate(self.tasks):
+                if self.find_filter and self.find_filter not in task.text.lower():
+                    continue
                 if task.project_name not in seen_projects:
                     seen_projects.add(task.project_name)
-                    is_collapsed = task.project_name in self.collapsed_projects
+                    # Emit ancestor headers that haven't been shown
+                    parts = task.project_name.split("/")
+                    for j in range(1, len(parts)):
+                        ancestor = "/".join(parts[:j])
+                        if ancestor not in seen_projects:
+                            seen_projects.add(ancestor)
+                            header_nav = nav_lookup.get(('header', ancestor))
+                            display_rows.append(('header', ancestor, header_nav))
+                    is_collapsed = self._is_project_collapsed(task.project_name)
                     header_nav = nav_lookup.get(('header', task.project_name))
                     display_rows.append(('header', task.project_name, header_nav))
                     if is_collapsed:
                         continue
                 task_nav = nav_lookup.get(('task', i))
-                if task.project_name not in self.collapsed_projects:
+                if not self._is_project_collapsed(task.project_name):
                     display_rows.append(('task', i, task_nav))
 
         # Find which display row the cursor is on for scrolling
@@ -423,7 +455,10 @@ class TodoTUI:
                 project_name = value
                 is_collapsed = project_name in self.collapsed_projects
                 collapse_icon = theme.collapse_closed if is_collapsed else theme.collapse_open
-                label = f" {collapse_icon} {project_name}"
+                depth = project_name.count("/")
+                display_name = project_name.rsplit("/", 1)[-1] if "/" in project_name else project_name
+                header_indent = "  " * depth
+                label = f" {header_indent}{collapse_icon} {display_name}"
                 try:
                     if bordered:
                         win.addstr(row, 0, theme.border_v, curses.color_pair(1))
@@ -443,8 +478,9 @@ class TodoTUI:
                 task = self.tasks[task_idx]
                 idx_str = f"{task_idx + 1:>3}"
                 checkbox = theme.checkbox_checked if task.checked else theme.checkbox_unchecked
-                depth = len(task.indent) // 4
-                indent_visual = "  " * depth
+                task_depth = len(task.indent) // 4
+                project_depth = task.project_name.count("/") + 1 if not self.current_project else 0
+                indent_visual = "  " * (task_depth + project_depth)
                 line_text = f" {idx_str} {indent_visual}{checkbox} {task.text}"
 
                 if len(line_text) >= cw:
@@ -510,7 +546,7 @@ class TodoTUI:
         if self.stage_view:
             project_label = " ⚡staging"
         if self.mode == 'modal':
-            hint = " ↑↓:nav  t:toggle  a:add  A:child  e:edit  d:del  s:stage  u:use  c:collapse  ^S:view  q:quit"
+            hint = " ↑↓:nav  t:toggle  a:add  A:child  e:edit  d:del  f:find  s:stage  u:use  c:collapse  ^S:view  q:quit"
         else:
             hint = " ^T:mode  ^F:full  ^S:staging  PgUp/PgDn:scroll  Tab:complete"
 
@@ -603,6 +639,8 @@ class TodoTUI:
         self.stdscr.noutrefresh()
 
     def _get_prompt(self) -> str:
+        if self.input_mode == 'find':
+            return "find> "
         if self.input_mode == 'add':
             proj = self._add_target_project or self.current_project or ''
             return f"add({proj})> " if proj else "add> "
@@ -720,6 +758,10 @@ class TodoTUI:
             self._modal_toggle_collapse()
             return
 
+        if key == ord('f'):
+            self._modal_start_find()
+            return
+
         if key == ord('s'):
             self._modal_stage_unstage()
             return
@@ -815,6 +857,13 @@ class TodoTUI:
         self.input_cursor = 0
         self._full_render()
 
+    def _modal_start_find(self):
+        self.input_mode = 'find'
+        self.input_buffer = ''
+        self.input_cursor = 0
+        self.find_filter = ''
+        self._full_render()
+
     def _modal_quit(self):
         self._add_output("  Quit?")
         self.input_mode = 'confirm_quit'
@@ -879,7 +928,31 @@ class TodoTUI:
 
     def _handle_input_mode_key(self, key):
         if key == 27:  # ESC - cancel
+            if self.input_mode == 'find':
+                self.find_filter = ''
+                self._reset_input_mode()
+                self._rebuild_nav_items()
+                self._full_render()
+                return
             self._cancel_input_mode()
+            return
+
+        if self.input_mode == 'find':
+            if key in (curses.KEY_ENTER, 10, 13):
+                self.find_filter = self.input_buffer.strip().lower()
+                self._reset_input_mode()
+                self._rebuild_nav_items()
+                self._full_render()
+                return
+            self._edit_input_buffer(key)
+            self.find_filter = self.input_buffer.strip().lower()
+            self.modal_cursor = 0
+            self.task_scroll = 0
+            self._rebuild_nav_items()
+            self._render_task_panel()
+            self._render_input_line()
+            self._position_cursor()
+            curses.doupdate()
             return
 
         # Confirm delete: respond to single y/n keypress
@@ -1277,6 +1350,7 @@ class TodoTUI:
             'addc': self._cmd_addc,
             'toggle': self._cmd_toggle,
             't': self._cmd_toggle,
+            'find': self._cmd_find,
             'check': self._cmd_check,
             'uncheck': self._cmd_uncheck,
             'edit': self._cmd_edit,
@@ -1327,7 +1401,8 @@ class TodoTUI:
             if path and path.exists():
                 self.tasks = parse_tasks_from_file(path, self.current_project)
         else:
-            for name, path in self.manager.get_all_project_paths():
+            project_paths = sorted(self.manager.get_all_project_paths(), key=lambda x: x[0])
+            for name, path in project_paths:
                 tasks = parse_tasks_from_file(path, name)
                 self.tasks.extend(tasks)
         if self.stage_view:
@@ -1335,26 +1410,52 @@ class TodoTUI:
             self.tasks = [t for t in self.tasks if t.task_id in staged_ids]
         self._rebuild_nav_items()
 
+    def _is_project_collapsed(self, project_name: str) -> bool:
+        """Check if a project or any of its ancestors is collapsed."""
+        if project_name in self.collapsed_projects:
+            return True
+        parts = project_name.split("/")
+        for i in range(1, len(parts)):
+            ancestor = "/".join(parts[:i])
+            if ancestor in self.collapsed_projects:
+                return True
+        return False
+
     def _rebuild_nav_items(self):
         """Build the list of navigable items for modal mode.
 
         In project scope: all items are tasks.
         In global scope: for expanded projects, items are tasks;
                          for collapsed projects, one header item per project.
+        Ancestor headers are emitted before subproject headers.
+
+        When find_filter is set, only tasks matching the filter are included.
         """
         self.nav_items = []
         if self.current_project:
             for i in range(len(self.tasks)):
+                if self.find_filter and self.find_filter not in self.tasks[i].text.lower():
+                    continue
                 self.nav_items.append(('task', i))
         else:
             seen_projects = set()
             for i, task in enumerate(self.tasks):
+                if self.find_filter and self.find_filter not in task.text.lower():
+                    continue
                 if task.project_name not in seen_projects:
                     seen_projects.add(task.project_name)
-                    if task.project_name in self.collapsed_projects:
-                        self.nav_items.append(('header', task.project_name))
+                    # Emit ancestor headers that haven't been seen yet
+                    parts = task.project_name.split("/")
+                    for j in range(1, len(parts)):
+                        ancestor = "/".join(parts[:j])
+                        if ancestor not in seen_projects:
+                            seen_projects.add(ancestor)
+                            self.nav_items.append(('header', ancestor))
+                    collapsed = self._is_project_collapsed(task.project_name)
+                    self.nav_items.append(('header', task.project_name))
+                    if collapsed:
                         continue
-                if task.project_name in self.collapsed_projects:
+                if self._is_project_collapsed(task.project_name):
                     continue
                 self.nav_items.append(('task', i))
         # Clamp cursor
@@ -1526,6 +1627,7 @@ class TodoTUI:
         self._add_output("  use             Switch to global scope")
         self._add_output("Viewing:")
         self._add_output("  ls              List tasks")
+        self._add_output("  find <text>     Search tasks (find with no args clears filter)")
         self._add_output("  show <n>        Show task details")
         self._add_output("  status          Show status")
         self._add_output("Tasks:")
@@ -1571,10 +1673,15 @@ class TodoTUI:
         if not projects:
             self._add_output("No projects. Use 'new <name>' to create one.")
             return
-        for p in projects:
-            marker = " ●" if p['name'] == self.current_project else ""
+        sorted_projects = sorted(projects, key=lambda p: p["name"])
+        for p in sorted_projects:
+            full_name = p['name']
+            depth = full_name.count("/")
+            display_name = full_name.rsplit("/", 1)[-1] if "/" in full_name else full_name
+            indent = "  " + "  " * depth
+            marker = " ●" if full_name == self.current_project else ""
             shared = f" (shared: {', '.join(p['shared_in'])})" if p['shared_in'] else ""
-            self._add_output(f"  {p['name']}: {p['todo_count']} pending{shared}{marker}")
+            self._add_output(f"{indent}{display_name}: {p['todo_count']} pending{shared}{marker}")
 
     def _cmd_use(self, args):
         if not args:
@@ -1598,6 +1705,24 @@ class TodoTUI:
         for i, task in enumerate(self.tasks, 1):
             checkbox = "[x]" if task.checked else "[ ]"
             self._add_output(f"  {i:>3} {checkbox} {task.text}")
+
+    def _cmd_find(self, args):
+        if not args:
+            if self.find_filter:
+                self.find_filter = ''
+                self._rebuild_nav_items()
+                self._add_output("✓ Find filter cleared")
+            else:
+                self._add_output("✗ Usage: find <text>")
+            return
+        query = ' '.join(args).lower()
+        self.find_filter = query
+        self._rebuild_nav_items()
+        matching = [t for t in self.tasks if query in t.text.lower()]
+        if not matching:
+            self._add_output(f"  No tasks matching '{' '.join(args)}'")
+        else:
+            self._add_output(f"  Found {len(matching)} task(s) matching '{' '.join(args)}'")
 
     def _cmd_show(self, args):
         if not args:
