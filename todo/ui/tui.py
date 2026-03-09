@@ -458,7 +458,7 @@ class TodoTUI:
                 depth = project_name.count("/")
                 display_name = project_name.rsplit("/", 1)[-1] if "/" in project_name else project_name
                 header_indent = "    " * depth
-                label = f" {header_indent}{collapse_icon} {display_name}"
+                label = f"     {header_indent}{collapse_icon} {display_name}"
                 try:
                     if bordered:
                         win.addstr(row, 0, theme.border_v, curses.color_pair(1))
