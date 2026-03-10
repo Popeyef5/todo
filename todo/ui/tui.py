@@ -93,6 +93,9 @@ class TodoTUI:
         # Hide completed tasks
         self.hide_done = False
 
+        # Registry cache (refreshed with tasks)
+        self._registry_cache = {}
+
     def run(self):
         """Entry point"""
         curses.wrapper(self._main)
@@ -489,7 +492,10 @@ class TodoTUI:
                 depth = project_name.count("/")
                 display_name = project_name.rsplit("/", 1)[-1] if "/" in project_name else project_name
                 header_indent = "    " * depth
-                label = f"     {header_indent}{collapse_icon} {display_name}"
+                shared_in = self._registry_cache.get(project_name, {}).get("shared_in", [])
+                shared_tag = f" (shared in {', '.join(shared_in)})" if shared_in else ""
+                label_base = f"     {header_indent}{collapse_icon} {display_name}"
+                label = label_base + shared_tag
                 try:
                     if bordered:
                         win.addstr(row, 0, theme.border_v, curses.color_pair(1))
@@ -497,8 +503,13 @@ class TodoTUI:
                         win.addnstr(row, cx, label.ljust(cw), cw,
                                     curses.color_pair(7) | curses.A_BOLD)
                     else:
-                        win.addnstr(row, cx, label, cw,
+                        win.addnstr(row, cx, label_base, cw,
                                     curses.color_pair(5) | curses.A_BOLD)
+                        if shared_tag:
+                            tag_x = cx + len(label_base)
+                            tag_avail = cw - len(label_base)
+                            if tag_avail > 0:
+                                win.addnstr(row, tag_x, shared_tag, tag_avail, curses.A_DIM)
                     if bordered and w >= 2:
                         win.insstr(row, w - 1, theme.border_v, curses.color_pair(1))
                 except curses.error:
@@ -1561,6 +1572,7 @@ class TodoTUI:
     # ── Task management ───────────────────────────────────────────────
 
     def _refresh_tasks(self):
+        self._registry_cache = self.manager.load_registry().get("projects", {})
         self.tasks = []
         if self.current_project:
             path = self.manager.get_project_path(self.current_project)

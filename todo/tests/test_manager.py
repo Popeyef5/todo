@@ -389,6 +389,139 @@ class TestNestedSubprojects:
         assert "discovered/child" in names
 
 
+class TestGroupManifest:
+    """Test manifest.json for shared group sync reconciliation."""
+
+    def _setup_group_with_git(self, manager, project_name="proj", group_name="team"):
+        manager.create_project(project_name)
+        manager.create_group(group_name)
+        manager.get_project_path(project_name).write_text("- [ ] original\n")
+        manager.add_project_to_group(project_name, group_name)
+        group_dir = manager.shared_dir / group_name
+        (group_dir / ".git").mkdir(exist_ok=True)
+        return group_dir
+
+    def test_manifest_written_on_add_to_group(self, manager):
+        manager.create_project("proj")
+        manager.create_group("team")
+        manager.add_project_to_group("proj", "team")
+        manifest = manager.shared_dir / "team" / "manifest.json"
+        assert manifest.exists()
+        data = json.loads(manifest.read_text())
+        assert "proj" in data["projects"]
+
+    def test_manifest_written_on_share_project(self, manager):
+        manager.create_project("proj")
+        manager.get_project_path("proj").write_text("- [ ] task\n")
+        manager.share_project("proj", "team")
+        manifest = manager.shared_dir / "team" / "manifest.json"
+        assert manifest.exists()
+        data = json.loads(manifest.read_text())
+        assert "proj" in data["projects"]
+
+    def test_manifest_updated_on_remove_project(self, manager):
+        manager.create_project("a")
+        manager.create_project("b")
+        manager.create_group("team")
+        manager.add_project_to_group("a", "team")
+        manager.add_project_to_group("b", "team")
+        manager.remove_project("a")
+        manifest = manager.shared_dir / "team" / "manifest.json"
+        data = json.loads(manifest.read_text())
+        assert "a" not in data["projects"]
+        assert "b" in data["projects"]
+
+    def test_manifest_written_during_sync(self, manager):
+        group_dir = self._setup_group_with_git(manager)
+        manager.sync()
+        manifest = group_dir / "manifest.json"
+        assert manifest.exists()
+        data = json.loads(manifest.read_text())
+        assert "proj" in data["projects"]
+
+    def test_sync_reconcile_removes_deleted_project(self, manager):
+        """When manifest says a project was removed, sync deletes it from data/."""
+        group_dir = self._setup_group_with_git(manager)
+
+        # Simulate remote deletion: manifest no longer lists "proj",
+        # and the .todo file is gone from shared/
+        (group_dir / "proj.todo").unlink()
+        manifest = group_dir / "manifest.json"
+        manifest.write_text(json.dumps({"projects": []}))
+
+        with patch("todo.sync.shared_sync.SharedSync.smart_fetch",
+                    return_value={"status": "behind", "local_sha": "a", "remote_sha": "b"}), \
+             patch("todo.sync.shared_sync.SharedSync.pull", return_value=True), \
+             patch("todo.sync.shared_sync.SharedSync.push", return_value=True), \
+             patch("todo.sync.shared_sync.SharedSync._commit_all_changes", return_value=True):
+            manager.sync()
+
+        assert not manager.get_project_path("proj").exists()
+        reg = manager.load_registry()
+        assert "proj" not in reg["projects"]
+        assert "proj" not in reg["groups"]["team"]["projects"]
+
+    def test_sync_reconcile_detects_new_project_in_manifest(self, manager):
+        """When manifest lists a project not in local registry, sync registers it."""
+        group_dir = self._setup_group_with_git(manager)
+
+        # Simulate remote adding a new project
+        (group_dir / "newproj.todo").write_text("- [ ] from remote\n")
+        manifest = group_dir / "manifest.json"
+        manifest.write_text(json.dumps({"projects": ["proj", "newproj"]}))
+
+        with patch("todo.sync.shared_sync.SharedSync.smart_fetch",
+                    return_value={"status": "behind", "local_sha": "a", "remote_sha": "b"}), \
+             patch("todo.sync.shared_sync.SharedSync.pull", return_value=True), \
+             patch("todo.sync.shared_sync.SharedSync.push", return_value=True), \
+             patch("todo.sync.shared_sync.SharedSync._commit_all_changes", return_value=True):
+            manager.sync()
+
+        reg = manager.load_registry()
+        assert "newproj" in reg["groups"]["team"]["projects"]
+        assert "newproj" in reg["projects"]
+        assert "team" in reg["projects"]["newproj"]["shared_in"]
+
+    def test_sync_reconcile_rename_as_delete_plus_add(self, manager):
+        """Rename = old project deleted + new project added via manifest."""
+        group_dir = self._setup_group_with_git(manager)
+
+        # Simulate rename: old file gone, new file present, manifest updated
+        (group_dir / "proj.todo").unlink()
+        (group_dir / "renamed.todo").write_text("- [ ] original\n")
+        manifest = group_dir / "manifest.json"
+        manifest.write_text(json.dumps({"projects": ["renamed"]}))
+
+        with patch("todo.sync.shared_sync.SharedSync.smart_fetch",
+                    return_value={"status": "behind", "local_sha": "a", "remote_sha": "b"}), \
+             patch("todo.sync.shared_sync.SharedSync.pull", return_value=True), \
+             patch("todo.sync.shared_sync.SharedSync.push", return_value=True), \
+             patch("todo.sync.shared_sync.SharedSync._commit_all_changes", return_value=True):
+            manager.sync()
+
+        reg = manager.load_registry()
+        assert "proj" not in reg["projects"]
+        assert "renamed" in reg["projects"]
+        assert "renamed" in reg["groups"]["team"]["projects"]
+        assert manager.data_dir / "renamed.todo"
+
+    def test_no_manifest_skips_reconciliation(self, manager):
+        """Without manifest.json, sync doesn't delete anything (backward compat)."""
+        group_dir = self._setup_group_with_git(manager)
+
+        with patch("todo.sync.shared_sync.SharedSync.smart_fetch",
+                    return_value={"status": "behind", "local_sha": "a", "remote_sha": "b"}), \
+             patch("todo.sync.shared_sync.SharedSync.pull", return_value=True), \
+             patch("todo.sync.shared_sync.SharedSync.push", return_value=True), \
+             patch("todo.sync.shared_sync.SharedSync._commit_all_changes", return_value=True):
+            manager.sync()
+
+        # proj should still exist — no reconciliation happened
+        assert manager.get_project_path("proj").exists()
+        reg = manager.load_registry()
+        assert "proj" in reg["projects"]
+
+
 class TestNuke:
 
     def test_nuke_removes_everything(self, manager):

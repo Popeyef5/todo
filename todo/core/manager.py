@@ -60,6 +60,31 @@ class TodoManager:
         with open(self.registry_file, "w") as f:
             json.dump(registry, f, indent=2)
 
+    # ── Group manifest ────────────────────────────────────────
+
+    def _write_group_manifest(self, group_name: str, projects: List[str]):
+        """Write manifest.json to a shared group directory."""
+        group_dir = self.shared_dir / group_name
+        if group_dir.exists():
+            manifest = {"projects": sorted(projects)}
+            with open(group_dir / "manifest.json", "w") as f:
+                json.dump(manifest, f, indent=2)
+
+    def _read_group_manifest(self, group_dir: Path) -> Optional[List[str]]:
+        """Read manifest.json from a shared group directory.
+
+        Returns the project list, or None if no manifest exists.
+        """
+        manifest_file = group_dir / "manifest.json"
+        if manifest_file.exists():
+            try:
+                with open(manifest_file, "r") as f:
+                    data = json.load(f)
+                return data.get("projects", [])
+            except (json.JSONDecodeError, IOError):
+                pass
+        return None
+
     # ── Project CRUD ──────────────────────────────────────────
 
     def create_project(self, name: str) -> Path:
@@ -188,7 +213,8 @@ class TodoManager:
         prefix = name + "/"
         to_remove = [n for n in registry["projects"] if n == name or n.startswith(prefix)]
 
-        # Remove from any shared groups
+        # Remove from any shared groups and update manifests
+        affected_groups = set()
         for proj_name in to_remove:
             for group_name in list(registry["projects"][proj_name].get("shared_in", [])):
                 group_info = registry["groups"].get(group_name)
@@ -197,10 +223,15 @@ class TodoManager:
                     shared_file = self.shared_dir / group_name / f"{proj_name}.todo"
                     if shared_file.exists():
                         shared_file.unlink()
+                    affected_groups.add(group_name)
 
         for proj_name in to_remove:
             del registry["projects"][proj_name]
         self.save_registry(registry)
+
+        for group_name in affected_groups:
+            self._write_group_manifest(group_name, registry["groups"][group_name]["projects"])
+
         return True
 
     def get_project_path(self, name: str) -> Path:
@@ -313,6 +344,7 @@ class TodoManager:
             registry["projects"][project_name].setdefault("shared_in", []).append(group_name)
 
         self.save_registry(registry)
+        self._write_group_manifest(group_name, registry["groups"][group_name]["projects"])
 
     def setup_group_sync(self, group_name: str, remote_url: str) -> bool:
         """Sets up git remote for an existing group"""
@@ -459,6 +491,7 @@ class TodoManager:
             registry["groups"][group_name]["remote"] = remote_url
 
         self.save_registry(registry)
+        self._write_group_manifest(group_name, registry["groups"][group_name]["projects"])
         return True
 
     def share_join(self, group_name: str, remote_url: str) -> bool:
@@ -587,6 +620,44 @@ class TodoManager:
                     self.conflict_manager.update_checksum(dst)
                 ensure_task_ids(dst)
 
+            # 4b. Reconcile: remove projects deleted remotely (via manifest)
+            manifest_projects = self._read_group_manifest(group_dir)
+            if manifest_projects is not None:
+                local_projects = set(group_info.get("projects", []))
+                remote_projects = set(manifest_projects)
+                removed = local_projects - remote_projects
+                added = remote_projects - local_projects
+                for proj_name in removed:
+                    # Remove local data/ file for this group's deleted project
+                    dst = self.get_project_path(proj_name)
+                    if dst.exists():
+                        dst.unlink()
+                    # Clean up empty ancestor directories
+                    parent = dst.parent
+                    while parent != self.data_dir:
+                        try:
+                            parent.rmdir()
+                        except OSError:
+                            break
+                        parent = parent.parent
+                    # Remove from registry
+                    if proj_name in registry["projects"]:
+                        shared_in = registry["projects"][proj_name].get("shared_in", [])
+                        if group_name in shared_in:
+                            shared_in.remove(group_name)
+                        if not shared_in:
+                            del registry["projects"][proj_name]
+                for proj_name in added:
+                    if proj_name not in registry["projects"]:
+                        registry["projects"][proj_name] = {
+                            "created": datetime.now().isoformat(),
+                            "shared_in": [group_name],
+                        }
+                    elif group_name not in registry["projects"][proj_name].get("shared_in", []):
+                        registry["projects"][proj_name].setdefault("shared_in", []).append(group_name)
+                group_info["projects"] = sorted(remote_projects)
+                self.save_registry(registry)
+
         # 5. Ensure task IDs on all project files
         for name, path in self.get_all_project_paths():
             ensure_task_ids(path)
@@ -616,6 +687,7 @@ class TodoManager:
                     else:
                         shutil.copy2(src, dst)
                     self.conflict_manager.update_checksum(dst)
+            self._write_group_manifest(group_name, group_info.get("projects", []))
 
         # 7. Commit+push main
         if (self.home_dir / ".git").exists():
