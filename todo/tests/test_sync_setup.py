@@ -37,7 +37,12 @@ def bare_remote():
 
 
 class TestMainSyncCloneExistingDir:
-    """Test that clone works when ~/.todo/ already exists with subdirectories."""
+    """Test that clone works when ~/.todo/ already exists with subdirectories.
+
+    Reproduces the real user flow: open interactive mode first (which creates
+    ~/.todo/ with data/, shared/, config.json, registry.json via
+    ensure_structure), then run setup with an existing remote repo.
+    """
 
     def _simulate_ensure_structure(self, home_dir):
         """Reproduce what TodoManager.ensure_structure() does before setup."""
@@ -49,7 +54,7 @@ class TestMainSyncCloneExistingDir:
         (home_dir / "registry.json").write_text('{"projects": {}, "groups": {}}')
 
     def test_clone_into_preexisting_directory(self, bare_remote, temp_dir):
-        """Simulates: user opens interactive mode (creates ~/.todo/), then sets up with existing repo."""
+        """Setup with clone=True succeeds even when ~/.todo/ already has files."""
         home_dir = temp_dir / ".todo"
         self._simulate_ensure_structure(home_dir)
 
@@ -62,7 +67,7 @@ class TestMainSyncCloneExistingDir:
         assert result is True
 
     def test_clone_sets_upstream_tracking(self, bare_remote, temp_dir):
-        """After clone, @{u} should resolve (upstream tracking is set)."""
+        """After clone, git rev-parse @{u} should work (upstream is set)."""
         home_dir = temp_dir / ".todo"
         self._simulate_ensure_structure(home_dir)
 
@@ -71,7 +76,6 @@ class TestMainSyncCloneExistingDir:
         sync = MainSync(home_dir, config)
         sync.setup(str(bare_remote), clone=True)
 
-        # This is the exact call that was failing before the fix
         result = subprocess.run(
             ["git", "rev-parse", "@{u}"],
             cwd=home_dir, capture_output=True, text=True,
@@ -114,6 +118,29 @@ class TestMainSyncCloneExistingDir:
         result = sync.full_sync()
         assert result["status"] != "error"
 
+    def test_git_pull_works_after_clone(self, bare_remote, temp_dir):
+        """After clone, a plain 'git pull' should work without errors."""
+        home_dir = temp_dir / ".todo"
+        self._simulate_ensure_structure(home_dir)
+
+        config = TodoConfig(home_dir / "config.json")
+        config.set("github_token", "fake-token")
+        sync = MainSync(home_dir, config)
+        sync.setup(str(bare_remote), clone=True)
+
+        # Commit any config changes so working tree is clean
+        subprocess.run(["git", "add", "."], cwd=home_dir, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "config update", "--allow-empty"],
+            cwd=home_dir, capture_output=True,
+        )
+
+        result = subprocess.run(
+            ["git", "pull"],
+            cwd=home_dir, capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f"git pull failed: {result.stderr}"
+
 
 class TestSharedSyncCloneExistingDir:
     """Test that SharedSync.clone works when the group dir already exists."""
@@ -121,7 +148,6 @@ class TestSharedSyncCloneExistingDir:
     def test_clone_into_preexisting_directory(self, bare_remote, temp_dir):
         group_dir = temp_dir / "shared" / "team"
         group_dir.mkdir(parents=True)
-        # Simulate pre-existing files in the group dir
         (group_dir / "some_file.todo").write_text("- [ ] local task\n")
 
         config = TodoConfig(temp_dir / "config.json")

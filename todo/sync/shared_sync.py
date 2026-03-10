@@ -1,6 +1,9 @@
 """Git sync for a shared group repository in shared/<group>/"""
 
 import os
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 from .auth import get_git_auth_env, resolve_token, is_https_url
@@ -55,34 +58,34 @@ class SharedSync(GitSyncBase):
 
         self.directory.mkdir(parents=True, exist_ok=True)
 
-        if not self.git_dir.exists():
-            self._git("init")
+        auth = self._auth_env_for_url(remote_url)
+        env = {**os.environ, **auth}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                ["git", "clone", remote_url, tmp],
+                capture_output=True, text=True, env=env,
+            )
+            if result.returncode != 0:
+                return False
+
+            tmp_path = Path(tmp)
+
+            if self.git_dir.exists():
+                shutil.rmtree(self.git_dir)
+
+            shutil.move(str(tmp_path / ".git"), str(self.git_dir))
+
+            for item in tmp_path.iterdir():
+                dest = self.directory / item.name
+                if dest.exists():
+                    if dest.is_dir():
+                        shutil.rmtree(dest)
+                    else:
+                        dest.unlink()
+                shutil.move(str(item), str(dest))
 
         self._configure_git()
-
-        result = self._git("remote", "add", "origin", remote_url)
-        if result.returncode != 0:
-            self._git("remote", "set-url", "origin", remote_url)
-
-        auth_env = self._auth_env_for_url(remote_url)
-        result = self._git("fetch", "origin", auth_env=auth_env)
-        if result.returncode != 0:
-            return False
-
-        result = self._git("symbolic-ref", "refs/remotes/origin/HEAD")
-        if result.returncode == 0:
-            default_branch = result.stdout.strip().replace("refs/remotes/origin/", "")
-        else:
-            default_branch = "main"
-            check = self._git("rev-parse", "--verify", "origin/main")
-            if check.returncode != 0:
-                default_branch = "master"
-
-        result = self._git("checkout", "-f", "-B", default_branch, f"origin/{default_branch}")
-        if result.returncode != 0:
-            return False
-
-        self._git("branch", f"--set-upstream-to=origin/{default_branch}")
         return True
 
     def push(self) -> bool:

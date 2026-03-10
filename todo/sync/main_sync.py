@@ -1,6 +1,9 @@
 """Git sync for the main ~/.todo/ repository"""
 
 import os
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 from .auth import get_git_auth_env, resolve_token, is_https_url
@@ -33,41 +36,41 @@ class MainSync(GitSyncBase):
             return False
 
         if clone:
-            # Directory may already exist (created by ensure_structure),
-            # so use init+fetch+checkout instead of git clone
-            if not self.git_dir.exists():
-                self._git("init")
+            # ~/.todo/ may already exist with files from ensure_structure().
+            # git clone refuses non-empty dirs, so clone into a temp dir
+            # and move the result over. This lets git handle all branch
+            # tracking setup natively.
+            auth = self._auth_env_for_url(remote_url)
+            env = {**os.environ, **auth}
+
+            with tempfile.TemporaryDirectory() as tmp:
+                result = subprocess.run(
+                    ["git", "clone", remote_url, tmp],
+                    capture_output=True, text=True, env=env,
+                )
+                if result.returncode != 0:
+                    return False
+
+                tmp_path = Path(tmp)
+
+                # Remove existing .git if any (from a prior failed setup)
+                if self.git_dir.exists():
+                    shutil.rmtree(self.git_dir)
+
+                # Move cloned .git into our directory
+                shutil.move(str(tmp_path / ".git"), str(self.git_dir))
+
+                # Copy repo files over (overwrite local scaffolding)
+                for item in tmp_path.iterdir():
+                    dest = self.directory / item.name
+                    if dest.exists():
+                        if dest.is_dir():
+                            shutil.rmtree(dest)
+                        else:
+                            dest.unlink()
+                    shutil.move(str(item), str(dest))
 
             self._configure_git()
-
-            result = self._git("remote", "add", "origin", remote_url)
-            if result.returncode != 0:
-                self._git("remote", "set-url", "origin", remote_url)
-
-            auth_env = self._auth_env_for_url(remote_url)
-            result = self._git("fetch", "origin", auth_env=auth_env)
-            if result.returncode != 0:
-                return False
-
-            # Detect the default branch from the remote
-            result = self._git("symbolic-ref", "refs/remotes/origin/HEAD")
-            if result.returncode == 0:
-                default_branch = result.stdout.strip().replace("refs/remotes/origin/", "")
-            else:
-                # Fallback: try main, then master
-                default_branch = "main"
-                check = self._git("rev-parse", "--verify", "origin/main")
-                if check.returncode != 0:
-                    default_branch = "master"
-
-            # Force checkout to overwrite local files (config.json, registry.json,
-            # etc.) created by ensure_structure() before setup was called
-            result = self._git("checkout", "-f", "-B", default_branch, f"origin/{default_branch}")
-            if result.returncode != 0:
-                return False
-
-            self._git("branch", f"--set-upstream-to=origin/{default_branch}")
-
             self.config.set("sync_enabled", True)
             self.config.set("sync_remote", remote_url)
             return True
