@@ -78,7 +78,7 @@ class SharedSync(GitSyncBase):
             if check.returncode != 0:
                 default_branch = "master"
 
-        result = self._git("checkout", "-B", default_branch, f"origin/{default_branch}")
+        result = self._git("checkout", "-f", "-B", default_branch, f"origin/{default_branch}")
         if result.returncode != 0:
             return False
 

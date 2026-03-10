@@ -39,16 +39,22 @@ def bare_remote():
 class TestMainSyncCloneExistingDir:
     """Test that clone works when ~/.todo/ already exists with subdirectories."""
 
+    def _simulate_ensure_structure(self, home_dir):
+        """Reproduce what TodoManager.ensure_structure() does before setup."""
+        home_dir.mkdir(exist_ok=True)
+        (home_dir / "data").mkdir(exist_ok=True)
+        (home_dir / "shared").mkdir(exist_ok=True)
+        (home_dir / "cache").mkdir(exist_ok=True)
+        (home_dir / "themes").mkdir(exist_ok=True)
+        (home_dir / "registry.json").write_text('{"projects": {}, "groups": {}}')
+
     def test_clone_into_preexisting_directory(self, bare_remote, temp_dir):
         """Simulates: user opens interactive mode (creates ~/.todo/), then sets up with existing repo."""
         home_dir = temp_dir / ".todo"
-        home_dir.mkdir()
-        # Simulate ensure_structure() creating subdirs before setup
-        (home_dir / "data").mkdir()
-        (home_dir / "shared").mkdir()
-        (home_dir / "cache").mkdir()
+        self._simulate_ensure_structure(home_dir)
 
         config = TodoConfig(home_dir / "config.json")
+        config.set("github_token", "fake-token")
         sync = MainSync(home_dir, config)
 
         result = sync.setup(str(bare_remote), clone=True)
@@ -58,11 +64,10 @@ class TestMainSyncCloneExistingDir:
     def test_clone_sets_upstream_tracking(self, bare_remote, temp_dir):
         """After clone, @{u} should resolve (upstream tracking is set)."""
         home_dir = temp_dir / ".todo"
-        home_dir.mkdir()
-        (home_dir / "data").mkdir()
-        (home_dir / "shared").mkdir()
+        self._simulate_ensure_structure(home_dir)
 
         config = TodoConfig(home_dir / "config.json")
+        config.set("github_token", "fake-token")
         sync = MainSync(home_dir, config)
         sync.setup(str(bare_remote), clone=True)
 
@@ -76,8 +81,7 @@ class TestMainSyncCloneExistingDir:
     def test_clone_fetches_remote_content(self, bare_remote, temp_dir):
         """Files from the remote repo should be present after clone."""
         home_dir = temp_dir / ".todo"
-        home_dir.mkdir()
-        (home_dir / "data").mkdir()
+        self._simulate_ensure_structure(home_dir)
 
         config = TodoConfig(home_dir / "config.json")
         sync = MainSync(home_dir, config)
@@ -89,7 +93,7 @@ class TestMainSyncCloneExistingDir:
     def test_clone_enables_sync_in_config(self, bare_remote, temp_dir):
         """sync_enabled and sync_remote should be set after clone."""
         home_dir = temp_dir / ".todo"
-        home_dir.mkdir()
+        self._simulate_ensure_structure(home_dir)
 
         config = TodoConfig(home_dir / "config.json")
         sync = MainSync(home_dir, config)
@@ -101,8 +105,7 @@ class TestMainSyncCloneExistingDir:
     def test_full_sync_works_after_clone(self, bare_remote, temp_dir):
         """After clone, full_sync (which uses @{u}) should not error."""
         home_dir = temp_dir / ".todo"
-        home_dir.mkdir()
-        (home_dir / "data").mkdir()
+        self._simulate_ensure_structure(home_dir)
 
         config = TodoConfig(home_dir / "config.json")
         sync = MainSync(home_dir, config)
@@ -118,6 +121,8 @@ class TestSharedSyncCloneExistingDir:
     def test_clone_into_preexisting_directory(self, bare_remote, temp_dir):
         group_dir = temp_dir / "shared" / "team"
         group_dir.mkdir(parents=True)
+        # Simulate pre-existing files in the group dir
+        (group_dir / "some_file.todo").write_text("- [ ] local task\n")
 
         config = TodoConfig(temp_dir / "config.json")
         sync = SharedSync(group_dir, config)
@@ -128,6 +133,7 @@ class TestSharedSyncCloneExistingDir:
     def test_clone_sets_upstream_tracking(self, bare_remote, temp_dir):
         group_dir = temp_dir / "shared" / "team"
         group_dir.mkdir(parents=True)
+        (group_dir / "some_file.todo").write_text("- [ ] local task\n")
 
         config = TodoConfig(temp_dir / "config.json")
         sync = SharedSync(group_dir, config)
