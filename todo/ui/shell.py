@@ -668,7 +668,7 @@ class TodoShell:
 
     def _cmd_project(self, args):
         if not args:
-            print(render.error("Usage: project <new|delete> ..."))
+            print(render.error("Usage: project <new|rename|delete> ..."))
             return
         sub = args[0].lower()
         if sub == 'new':
@@ -679,6 +679,22 @@ class TodoShell:
             self.manager.create_project(name)
             print(render.success(f"Created project: {name}"))
             self._refresh_tasks()
+        elif sub == 'rename':
+            if len(args) < 3:
+                print(render.error("Usage: project rename <old> <new>"))
+                return
+            old_name, new_name = args[1], args[2]
+            try:
+                self.manager.rename_project(old_name, new_name)
+                if self.current_project == old_name:
+                    self.current_project = new_name
+                elif self.current_project and self.current_project.startswith(old_name + "/"):
+                    self.current_project = new_name + self.current_project[len(old_name):]
+                self._propagate()
+                self._refresh_tasks()
+                print(render.success(f"Renamed '{old_name}' → '{new_name}'"))
+            except ValueError as e:
+                print(render.error(str(e)))
         elif sub == 'delete':
             if len(args) < 2:
                 print(render.error("Usage: project delete <name>"))

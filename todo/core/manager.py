@@ -234,6 +234,90 @@ class TodoManager:
 
         return True
 
+    def rename_project(self, old_name: str, new_name: str) -> bool:
+        """Rename a project, updating data files, registry, groups, and manifests.
+
+        Also renames any subprojects (projects whose name starts with old_name/).
+        """
+        registry = self.load_registry()
+        if old_name not in registry["projects"]:
+            raise ValueError(f"Project '{old_name}' not found")
+        if new_name in registry["projects"]:
+            raise ValueError(f"Project '{new_name}' already exists")
+
+        # Collect this project and all descendant subprojects
+        prefix = old_name + "/"
+        to_rename = {}  # old -> new
+        for pname in list(registry["projects"]):
+            if pname == old_name:
+                to_rename[pname] = new_name
+            elif pname.startswith(prefix):
+                to_rename[pname] = new_name + pname[len(old_name):]
+
+        # Check no target names already exist
+        for new_pname in to_rename.values():
+            if new_pname != new_name and new_pname in registry["projects"]:
+                raise ValueError(f"Project '{new_pname}' already exists")
+
+        affected_groups = set()
+
+        for old_pname, new_pname in to_rename.items():
+            info = registry["projects"].pop(old_pname)
+
+            # Move data file
+            old_path = self.get_project_path(old_pname)
+            new_path = self.data_dir / f"{new_pname}.todo"
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+            if old_path.exists():
+                shutil.move(str(old_path), str(new_path))
+
+            # Update shared group files and references
+            for group_name in list(info.get("shared_in", [])):
+                group_info = registry["groups"].get(group_name)
+                if not group_info:
+                    continue
+                # Rename file in shared dir
+                old_shared = self.shared_dir / group_name / f"{old_pname}.todo"
+                new_shared = self.shared_dir / group_name / f"{new_pname}.todo"
+                new_shared.parent.mkdir(parents=True, exist_ok=True)
+                if old_shared.exists():
+                    shutil.move(str(old_shared), str(new_shared))
+                # Update group project list
+                if old_pname in group_info["projects"]:
+                    group_info["projects"].remove(old_pname)
+                    group_info["projects"].append(new_pname)
+                    group_info["projects"].sort()
+                affected_groups.add(group_name)
+
+            # Update checksum cache (keyed by filename)
+            checksums = self.conflict_manager.load_checksums()
+            old_key = f"{old_pname}.todo"
+            new_key = f"{new_pname}.todo"
+            if old_key in checksums:
+                checksums[new_key] = checksums.pop(old_key)
+                self.conflict_manager.save_checksums(checksums)
+
+            registry["projects"][new_pname] = info
+
+        self.save_registry(registry)
+
+        # Update manifests for affected groups
+        for group_name in affected_groups:
+            group_info = registry["groups"].get(group_name)
+            if group_info:
+                self._write_group_manifest(group_name, group_info["projects"])
+
+        # Clean up empty ancestor directories under data/
+        parent = (self.data_dir / old_name).parent
+        while parent != self.data_dir:
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+
+        return True
+
     def get_project_path(self, name: str) -> Path:
         """Return Path to the .todo file in data/.
 

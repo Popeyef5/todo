@@ -83,6 +83,82 @@ class TestProjectCRUD:
         assert "p2" in names
 
 
+class TestRenameProject:
+
+    def test_basic_rename(self, manager):
+        manager.create_project("old")
+        manager.get_project_path("old").write_text("- [ ] task\n")
+        manager.rename_project("old", "new")
+        assert not manager.get_project_path("old").exists()
+        assert manager.get_project_path("new").exists()
+        assert "task" in manager.get_project_path("new").read_text()
+        reg = manager.load_registry()
+        assert "old" not in reg["projects"]
+        assert "new" in reg["projects"]
+
+    def test_rename_nonexistent_raises(self, manager):
+        with pytest.raises(ValueError, match="not found"):
+            manager.rename_project("ghost", "new")
+
+    def test_rename_to_existing_raises(self, manager):
+        manager.create_project("a")
+        manager.create_project("b")
+        with pytest.raises(ValueError, match="already exists"):
+            manager.rename_project("a", "b")
+
+    def test_rename_updates_group_membership(self, manager):
+        manager.create_project("proj")
+        manager.get_project_path("proj").write_text("- [ ] task\n")
+        manager.create_group("team")
+        manager.add_project_to_group("proj", "team")
+        manager.rename_project("proj", "renamed")
+        reg = manager.load_registry()
+        assert "renamed" in reg["groups"]["team"]["projects"]
+        assert "proj" not in reg["groups"]["team"]["projects"]
+        assert "team" in reg["projects"]["renamed"]["shared_in"]
+
+    def test_rename_moves_shared_file(self, manager):
+        manager.create_project("proj")
+        manager.get_project_path("proj").write_text("- [ ] task\n")
+        manager.create_group("team")
+        manager.add_project_to_group("proj", "team")
+        manager.rename_project("proj", "renamed")
+        old_shared = manager.shared_dir / "team" / "proj.todo"
+        new_shared = manager.shared_dir / "team" / "renamed.todo"
+        assert not old_shared.exists()
+        assert new_shared.exists()
+
+    def test_rename_updates_manifest(self, manager):
+        manager.create_project("proj")
+        manager.get_project_path("proj").write_text("- [ ] task\n")
+        manager.create_group("team")
+        manager.add_project_to_group("proj", "team")
+        manager.rename_project("proj", "renamed")
+        manifest = manager._read_group_manifest(manager.shared_dir / "team")
+        assert "renamed" in manifest
+        assert "proj" not in manifest
+
+    def test_rename_cascades_to_subprojects(self, manager):
+        manager.create_project("parent")
+        manager.create_project("parent/child")
+        manager.get_project_path("parent/child").write_text("- [ ] sub\n")
+        manager.rename_project("parent", "newparent")
+        reg = manager.load_registry()
+        assert "parent" not in reg["projects"]
+        assert "parent/child" not in reg["projects"]
+        assert "newparent" in reg["projects"]
+        assert "newparent/child" in reg["projects"]
+        assert manager.get_project_path("newparent/child").exists()
+
+    def test_rename_preserves_created_date(self, manager):
+        manager.create_project("proj")
+        reg = manager.load_registry()
+        created = reg["projects"]["proj"]["created"]
+        manager.rename_project("proj", "renamed")
+        reg = manager.load_registry()
+        assert reg["projects"]["renamed"]["created"] == created
+
+
 class TestGroups:
 
     def test_create_group(self, manager):

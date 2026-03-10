@@ -1480,31 +1480,111 @@ class TodoTUI:
     _TAB_COMMANDS = [
         'help', 'projects', 'use', 'ls', 'show', 'add', 'addc',
         'toggle', 'check', 'uncheck', 'edit', 'rm', 'project',
-        'hide', 'stage', 'unstage', 'staged',
+        'hide', 'stage', 'unstage', 'staged', 'find',
         'group', 'setup', 'sync', 'push', 'pull',
         'status', 'theme', 'config', 'nuke', 'link', 'unlink',
         'clear', 'quit', 'exit',
     ]
 
+    def _get_project_names(self) -> List[str]:
+        return sorted(self._registry_cache.keys()) if self._registry_cache else [
+            p['name'] for p in self.manager.list_projects()
+        ]
+
+    def _get_group_names(self) -> List[str]:
+        registry = self.manager.load_registry()
+        return sorted(registry.get("groups", {}).keys())
+
     def _tab_complete(self):
         text = self.input_buffer[:self.input_cursor]
-        if ' ' in text:
-            return  # only complete the first word
         if not text:
             return
-        matches = [c for c in self._TAB_COMMANDS if c.startswith(text.lower())]
+
+        if ' ' not in text:
+            # Complete command name
+            matches = [c for c in self._TAB_COMMANDS if c.startswith(text.lower())]
+            self._apply_tab_matches(matches, prefix='', fragment=text)
+            return
+
+        # Argument completion
+        try:
+            parts = shlex.split(text)
+        except ValueError:
+            parts = text.split()
+        cmd = parts[0].lower()
+        # The fragment being typed (empty string if text ends with space)
+        fragment = parts[-1] if not text.endswith(' ') else ''
+        n_args = len(parts) - 1 if not text.endswith(' ') else len(parts)
+
+        candidates = self._get_tab_candidates(cmd, n_args, parts)
+        if candidates is None:
+            return
+        matches = [c for c in candidates if c.startswith(fragment)]
+        # Build the prefix (everything before the fragment)
+        prefix = text[:len(text) - len(fragment)]
+        self._apply_tab_matches(matches, prefix=prefix, fragment=fragment)
+
+    def _get_tab_candidates(self, cmd, n_args, parts) -> Optional[List[str]]:
+        """Return candidate strings for argument completion, or None."""
+        if cmd in ('use', 'link', 'unlink') and n_args == 1:
+            return self._get_project_names()
+
+        if cmd == 'theme' and n_args == 1:
+            return list_themes()
+
+        if cmd == 'project':
+            if n_args == 1:
+                return ['new', 'rename', 'delete']
+            if n_args == 2 and len(parts) > 1 and parts[1].lower() in ('delete', 'rename'):
+                return self._get_project_names()
+
+        if cmd == 'group':
+            if n_args == 1:
+                return ['new', 'add', 'sync', 'invite', 'join', 'list']
+            sub = parts[1].lower() if len(parts) > 1 else ''
+            if sub == 'add':
+                if n_args == 2:
+                    return self._get_project_names()
+                if n_args == 3:
+                    return self._get_group_names()
+            if sub in ('sync', 'invite') and n_args == 2:
+                return self._get_group_names()
+
+        if cmd == 'config' and n_args == 1:
+            return sorted(self.manager.config.config.keys())
+
+        if cmd in ('stage', 'unstage') and n_args == 1:
+            return self._get_project_names()
+
+        if cmd == 'find' and n_args == 1:
+            return self._get_project_names()
+
+        return None
+
+    def _apply_tab_matches(self, matches: List[str], prefix: str, fragment: str = ''):
+        """Apply tab completion results to the input buffer."""
+        if not matches:
+            return
+        rest = self.input_buffer[self.input_cursor:]
         if len(matches) == 1:
-            self.input_buffer = matches[0] + ' ' + self.input_buffer[self.input_cursor:]
-            self.input_cursor = len(matches[0]) + 1
-            self._render_input_line()
-            self._position_cursor()
-            curses.doupdate()
-        elif matches:
+            completed = prefix + matches[0] + ' '
+            self.input_buffer = completed + rest
+            self.input_cursor = len(completed)
+        else:
+            # Complete common prefix
+            common = matches[0]
+            for m in matches[1:]:
+                while not m.startswith(common):
+                    common = common[:-1]
+            if len(common) > len(fragment):
+                completed = prefix + common
+                self.input_buffer = completed + rest
+                self.input_cursor = len(completed)
             self._add_output("  " + "  ".join(matches))
             self._render_output_panel()
-            self._render_input_line()
-            self._position_cursor()
-            curses.doupdate()
+        self._render_input_line()
+        self._position_cursor()
+        curses.doupdate()
 
     def _output_scroll_up(self):
         max_scroll = max(len(self.output_lines) - self.output_h, 0)
@@ -1958,6 +2038,7 @@ class TodoTUI:
         self._add_output("  Ctrl+S          Toggle staging view")
         self._add_output("Projects:")
         self._add_output("  project new <name>      Create project")
+        self._add_output("  project rename <old> <new>  Rename project")
         self._add_output("  project delete <name>   Delete project")
         self._add_output("Groups:")
         self._add_output("  group new <name>          Create a group")
@@ -2224,7 +2305,7 @@ class TodoTUI:
 
     def _cmd_project(self, args):
         if not args:
-            self._add_output("✗ Usage: project <new|delete> ...")
+            self._add_output("✗ Usage: project <new|rename|delete> ...")
             return
         sub = args[0].lower()
         if sub == 'new':
@@ -2236,6 +2317,22 @@ class TodoTUI:
             self._refresh_tasks()
             self._move_cursor_to_project(name)
             self._add_output(f"✓ Created project: {name}")
+        elif sub == 'rename':
+            if len(args) < 3:
+                self._add_output("✗ Usage: project rename <old> <new>")
+                return
+            old_name, new_name = args[1], args[2]
+            try:
+                self.manager.rename_project(old_name, new_name)
+                if self.current_project == old_name:
+                    self.current_project = new_name
+                elif self.current_project and self.current_project.startswith(old_name + "/"):
+                    self.current_project = new_name + self.current_project[len(old_name):]
+                self._propagate()
+                self._refresh_tasks()
+                self._add_output(f"✓ Renamed '{old_name}' → '{new_name}'")
+            except ValueError as e:
+                self._add_output(f"✗ {e}")
         elif sub == 'delete':
             if len(args) < 2:
                 self._add_output("✗ Usage: project delete <name>")
