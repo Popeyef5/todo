@@ -42,6 +42,12 @@ class MainSync(GitSyncBase):
                     capture_output=True, check=True, env=env,
                 )
                 self._configure_git()
+                # Ensure upstream tracking is set for the current branch
+                # Get current branch name and set its upstream
+                branch = self._git("rev-parse", "--abbrev-ref", "HEAD")
+                if branch.returncode == 0:
+                    branch_name = branch.stdout.strip()
+                    self._git("branch", f"--set-upstream-to=origin/{branch_name}")
                 return True
             except subprocess.CalledProcessError:
                 return False
