@@ -229,8 +229,14 @@ class TodoManager:
         data/.
         """
         registry = self.load_registry()
-        if name not in registry["projects"]:
-            return False
+        in_registry = name in registry["projects"]
+
+        if not in_registry:
+            # Allow removing orphaned filesystem-only projects
+            project_dir = self.data_dir / name
+            flat_file = self.data_dir / f"{name}.todo"
+            if not project_dir.is_dir() and not flat_file.exists():
+                return False
 
         # Delete file or directory
         project_dir = self.data_dir / name
@@ -249,28 +255,29 @@ class TodoManager:
                 break
             parent = parent.parent
 
-        # Collect this project and all descendant subprojects
-        prefix = name + "/"
-        to_remove = [n for n in registry["projects"] if n == name or n.startswith(prefix)]
+        if in_registry:
+            # Collect this project and all descendant subprojects
+            prefix = name + "/"
+            to_remove = [n for n in registry["projects"] if n == name or n.startswith(prefix)]
 
-        # Remove from any shared groups and update manifests
-        affected_groups = set()
-        for proj_name in to_remove:
-            for group_name in list(registry["projects"][proj_name].get("shared_in", [])):
-                group_info = registry["groups"].get(group_name)
-                if group_info and proj_name in group_info["projects"]:
-                    group_info["projects"].remove(proj_name)
-                    shared_file = self.shared_dir / group_name / f"{proj_name}.todo"
-                    if shared_file.exists():
-                        shared_file.unlink()
-                    affected_groups.add(group_name)
+            # Remove from any shared groups and update manifests
+            affected_groups = set()
+            for proj_name in to_remove:
+                for group_name in list(registry["projects"][proj_name].get("shared_in", [])):
+                    group_info = registry["groups"].get(group_name)
+                    if group_info and proj_name in group_info["projects"]:
+                        group_info["projects"].remove(proj_name)
+                        shared_file = self.shared_dir / group_name / f"{proj_name}.todo"
+                        if shared_file.exists():
+                            shared_file.unlink()
+                        affected_groups.add(group_name)
 
-        for proj_name in to_remove:
-            del registry["projects"][proj_name]
-        self.save_registry(registry)
+            for proj_name in to_remove:
+                del registry["projects"][proj_name]
+            self.save_registry(registry)
 
-        for group_name in affected_groups:
-            self._write_group_manifest(group_name, registry["groups"][group_name]["projects"])
+            for group_name in affected_groups:
+                self._write_group_manifest(group_name, registry["groups"][group_name]["projects"])
 
         return True
 

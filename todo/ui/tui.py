@@ -2473,6 +2473,8 @@ class TodoTUI:
                         self._add_output(f"  Run 'group add <subproject> {group_name}' to add them")
             except ValueError as e:
                 self._add_output(f"✗ {e}")
+            self._refresh_tasks()
+            self.dirty = True
 
         elif sub == 'sync':
             if len(args) < 2:

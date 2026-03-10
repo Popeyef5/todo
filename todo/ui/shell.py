@@ -779,6 +779,8 @@ class TodoShell:
                                 print(render.success(f"Added '{sub_name}' to group '{group_name}'"))
             except ValueError as e:
                 print(render.error(str(e)))
+            self._refresh_tasks()
+            self.dirty = True
 
         elif sub == 'sync':
             if len(args) < 2:
