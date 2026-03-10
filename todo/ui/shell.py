@@ -919,6 +919,7 @@ class TodoShell:
         # ── Step 3: Repo URL ──
         print(render.color("  Repository", S.BOLD, S.BRIGHT_WHITE))
 
+        is_existing_repo = False
         if provider in ("github", "gitlab") and token and username:
             print(f"    {render.color('1', S.BRIGHT_CYAN)}) Create a new private repo")
             print(f"    {render.color('2', S.BRIGHT_CYAN)}) Use an existing repo URL")
@@ -929,11 +930,13 @@ class TodoShell:
                 if not remote_url:
                     return
             else:
+                is_existing_repo = True
                 remote_url = self._prompt("  Repo URL")
                 if not remote_url:
                     print(render.error("No URL provided."))
                     return
         else:
+            is_existing_repo = True
             remote_url = self._prompt("  Repo URL (HTTPS or SSH)")
             if not remote_url:
                 print(render.error("No URL provided."))
@@ -943,7 +946,11 @@ class TodoShell:
 
         # ── Step 4: Apply ──
         print(render.dim("  Configuring sync..."))
-        if self.manager.sync_setup(remote_url):
+        if is_existing_repo:
+            success = self.manager.sync_clone(remote_url)
+        else:
+            success = self.manager.sync_setup(remote_url)
+        if success:
             print(render.success(f"Sync configured: {remote_url}"))
             self._start_background_sync()
         else:
