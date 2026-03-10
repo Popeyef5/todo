@@ -82,6 +82,7 @@ class TodoTUI:
         self._bg_sync = None  # BackgroundSync instance
         self._main_sync = None  # MainSync instance (set in _start_background_sync)
         self._setup_group_name = None  # when set, setup wizard targets this group
+        self._setup_is_existing_repo = False  # True when user chose "use existing repo"
         self._initial_target = initial_target
 
         # Staging ground
@@ -2393,6 +2394,7 @@ class TodoTUI:
             if provider in ("github", "gitlab"):
                 self._try_auto_auth(provider)
             else:
+                self._setup_is_existing_repo = True
                 self._add_output("")
                 self._add_output("  Enter your git repo URL (HTTPS or SSH):")
                 self.input_mode = 'setup_repo_url'
@@ -2413,12 +2415,14 @@ class TodoTUI:
 
         if step == 'setup_repo_choice':
             if text == "1":
+                self._setup_is_existing_repo = False
                 default_name = self._setup_group_name or '.todos'
                 self._add_output("  Repo name:")
                 self.input_mode = 'setup_repo_name'
                 self.input_buffer = default_name
                 self.input_cursor = len(self.input_buffer)
             else:
+                self._setup_is_existing_repo = True
                 self._add_output("  Enter repo URL:")
                 self.input_mode = 'setup_repo_url'
                 self.input_buffer = ''
@@ -2553,6 +2557,7 @@ class TodoTUI:
     def _finish_setup(self, remote_url):
         """Apply the sync configuration — routes to group or main sync."""
         group = self._setup_group_name
+        is_existing = self._setup_is_existing_repo
         if group:
             self._add_output(f"  Configuring sync for group '{group}'...")
             if self.manager.setup_group_sync(group, remote_url):
@@ -2560,8 +2565,12 @@ class TodoTUI:
             else:
                 self._add_output("✗ Setup failed. Check your URL and auth.")
         else:
-            self._add_output("  Configuring sync...")
-            error = self.manager.sync_setup(remote_url)
+            if is_existing:
+                self._add_output("  Cloning from existing repo...")
+                error = self.manager.sync_clone(remote_url)
+            else:
+                self._add_output("  Initializing new repo...")
+                error = self.manager.sync_setup(remote_url)
             if not error:
                 self._add_output(f"✓ Sync configured: {remote_url}")
                 self._start_background_sync()
