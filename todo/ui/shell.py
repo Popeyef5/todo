@@ -754,12 +754,29 @@ class TodoShell:
 
         elif sub == 'add':
             if len(args) < 3:
-                print(render.error("Usage: group add <project> <group>"))
+                print(render.error("Usage: group add <project> [<project2> ...] <group>"))
                 return
-            project_name, group_name = args[1], args[2]
+            group_name = args[-1]
+            project_names = args[1:-1]
             try:
-                self.manager.add_project_to_group(project_name, group_name)
-                print(render.success(f"Added '{project_name}' to group '{group_name}'"))
+                for project_name in project_names:
+                    self.manager.add_project_to_group(project_name, group_name)
+                    print(render.success(f"Added '{project_name}' to group '{group_name}'"))
+                    # Offer to add subprojects
+                    registry = self.manager.load_registry()
+                    prefix = project_name + "/"
+                    subprojects = [
+                        n for n in registry["projects"]
+                        if n.startswith(prefix)
+                        and n not in registry["groups"].get(group_name, {}).get("projects", [])
+                    ]
+                    if subprojects:
+                        names = ", ".join(subprojects)
+                        resp = self._prompt(f"Also add subprojects ({names})? [y/N]")
+                        if resp.strip().lower() == "y":
+                            for sub_name in subprojects:
+                                self.manager.add_project_to_group(sub_name, group_name)
+                                print(render.success(f"Added '{sub_name}' to group '{group_name}'"))
             except ValueError as e:
                 print(render.error(str(e)))
 

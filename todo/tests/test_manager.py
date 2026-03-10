@@ -117,7 +117,8 @@ class TestRenameProject:
         assert "proj" not in reg["groups"]["team"]["projects"]
         assert "team" in reg["projects"]["renamed"]["shared_in"]
 
-    def test_rename_moves_shared_file(self, manager):
+    def test_rename_keeps_shared_file_in_place(self, manager):
+        """Local rename should NOT move shared file (UUID tracks identity)."""
         manager.create_project("proj")
         manager.get_project_path("proj").write_text("- [ ] task\n")
         manager.create_group("team")
@@ -125,18 +126,22 @@ class TestRenameProject:
         manager.rename_project("proj", "renamed")
         old_shared = manager.shared_dir / "team" / "proj.todo"
         new_shared = manager.shared_dir / "team" / "renamed.todo"
-        assert not old_shared.exists()
-        assert new_shared.exists()
+        # Shared file stays under original name
+        assert old_shared.exists()
+        assert not new_shared.exists()
 
-    def test_rename_updates_manifest(self, manager):
+    def test_rename_preserves_manifest_uuid(self, manager):
+        """Local rename should not change the manifest — UUID and shared name stay."""
         manager.create_project("proj")
         manager.get_project_path("proj").write_text("- [ ] task\n")
         manager.create_group("team")
         manager.add_project_to_group("proj", "team")
+        reg = manager.load_registry()
+        project_uuid = reg["projects"]["proj"]["id"]
         manager.rename_project("proj", "renamed")
         manifest = manager._read_group_manifest(manager.shared_dir / "team")
-        assert "renamed" in manifest
-        assert "proj" not in manifest
+        assert project_uuid in manifest
+        assert manifest[project_uuid] == "proj"
 
     def test_rename_cascades_to_subprojects(self, manager):
         manager.create_project("parent")
@@ -465,6 +470,40 @@ class TestNestedSubprojects:
         assert "discovered/child" in names
 
 
+class TestSharedSubprojectMigration:
+    """Test that sharing a subproject migrates parent flat file in shared/."""
+
+    def test_adding_subproject_migrates_parent_in_shared(self, manager):
+        """When parent is shared as flat file, adding subproject migrates to dir/index."""
+        manager.create_project("proj")
+        manager.get_project_path("proj").write_text("- [ ] parent task\n")
+        manager.create_group("team")
+        manager.add_project_to_group("proj", "team")
+
+        # Parent should be flat file in shared/
+        assert (manager.shared_dir / "team" / "proj.todo").is_file()
+
+        # Create and share subproject
+        manager.create_project("proj/sub")
+        manager.get_project_path("proj/sub").write_text("- [ ] sub task\n")
+        manager.add_project_to_group("proj/sub", "team")
+
+        # Parent should now be migrated to directory format
+        assert not (manager.shared_dir / "team" / "proj.todo").exists()
+        assert (manager.shared_dir / "team" / "proj" / "index.todo").exists()
+        assert "parent task" in (manager.shared_dir / "team" / "proj" / "index.todo").read_text()
+
+        # Subproject file should exist
+        assert (manager.shared_dir / "team" / "proj" / "sub.todo").exists()
+        assert "sub task" in (manager.shared_dir / "team" / "proj" / "sub.todo").read_text()
+
+        # Manifest should have project names (not filenames)
+        manifest = manager._read_group_manifest(manager.shared_dir / "team")
+        names = set(manifest.values())
+        assert "proj" in names
+        assert "proj/sub" in names
+
+
 class TestGroupManifest:
     """Test manifest.json for shared group sync reconciliation."""
 
@@ -484,7 +523,9 @@ class TestGroupManifest:
         manifest = manager.shared_dir / "team" / "manifest.json"
         assert manifest.exists()
         data = json.loads(manifest.read_text())
-        assert "proj" in data["projects"]
+        # Manifest is now UUID-keyed
+        assert isinstance(data["projects"], dict)
+        assert "proj" in data["projects"].values()
 
     def test_manifest_written_on_share_project(self, manager):
         manager.create_project("proj")
@@ -493,7 +534,8 @@ class TestGroupManifest:
         manifest = manager.shared_dir / "team" / "manifest.json"
         assert manifest.exists()
         data = json.loads(manifest.read_text())
-        assert "proj" in data["projects"]
+        assert isinstance(data["projects"], dict)
+        assert "proj" in data["projects"].values()
 
     def test_manifest_updated_on_remove_project(self, manager):
         manager.create_project("a")
@@ -501,11 +543,15 @@ class TestGroupManifest:
         manager.create_group("team")
         manager.add_project_to_group("a", "team")
         manager.add_project_to_group("b", "team")
+        reg = manager.load_registry()
+        uuid_a = reg["projects"]["a"]["id"]
+        uuid_b = reg["projects"]["b"]["id"]
         manager.remove_project("a")
         manifest = manager.shared_dir / "team" / "manifest.json"
         data = json.loads(manifest.read_text())
-        assert "a" not in data["projects"]
-        assert "b" in data["projects"]
+        assert uuid_a not in data["projects"]
+        assert uuid_b in data["projects"]
+        assert data["projects"][uuid_b] == "b"
 
     def test_manifest_written_during_sync(self, manager):
         group_dir = self._setup_group_with_git(manager)
@@ -513,17 +559,17 @@ class TestGroupManifest:
         manifest = group_dir / "manifest.json"
         assert manifest.exists()
         data = json.loads(manifest.read_text())
-        assert "proj" in data["projects"]
+        assert isinstance(data["projects"], dict)
+        assert "proj" in data["projects"].values()
 
     def test_sync_reconcile_removes_deleted_project(self, manager):
-        """When manifest says a project was removed, sync deletes it from data/."""
+        """When manifest says a project was removed (UUID gone), sync deletes it from data/."""
         group_dir = self._setup_group_with_git(manager)
 
-        # Simulate remote deletion: manifest no longer lists "proj",
-        # and the .todo file is gone from shared/
+        # Simulate remote deletion: manifest is empty dict, .todo file gone
         (group_dir / "proj.todo").unlink()
         manifest = group_dir / "manifest.json"
-        manifest.write_text(json.dumps({"projects": []}))
+        manifest.write_text(json.dumps({"projects": {}}))
 
         with patch("todo.sync.shared_sync.SharedSync.smart_fetch",
                     return_value={"status": "behind", "local_sha": "a", "remote_sha": "b"}), \
@@ -538,13 +584,19 @@ class TestGroupManifest:
         assert "proj" not in reg["groups"]["team"]["projects"]
 
     def test_sync_reconcile_detects_new_project_in_manifest(self, manager):
-        """When manifest lists a project not in local registry, sync registers it."""
+        """When manifest lists a UUID not in local registry, sync registers it."""
         group_dir = self._setup_group_with_git(manager)
+        reg = manager.load_registry()
+        existing_uuid = reg["projects"]["proj"]["id"]
 
         # Simulate remote adding a new project
+        new_uuid = "00000000-0000-0000-0000-000000000099"
         (group_dir / "newproj.todo").write_text("- [ ] from remote\n")
         manifest = group_dir / "manifest.json"
-        manifest.write_text(json.dumps({"projects": ["proj", "newproj"]}))
+        manifest.write_text(json.dumps({"projects": {
+            existing_uuid: "proj",
+            new_uuid: "newproj",
+        }}))
 
         with patch("todo.sync.shared_sync.SharedSync.smart_fetch",
                     return_value={"status": "behind", "local_sha": "a", "remote_sha": "b"}), \
@@ -556,17 +608,19 @@ class TestGroupManifest:
         reg = manager.load_registry()
         assert "newproj" in reg["groups"]["team"]["projects"]
         assert "newproj" in reg["projects"]
+        assert reg["projects"]["newproj"]["id"] == new_uuid
         assert "team" in reg["projects"]["newproj"]["shared_in"]
 
     def test_sync_reconcile_rename_as_delete_plus_add(self, manager):
-        """Rename = old project deleted + new project added via manifest."""
+        """Remote rename = old UUID removed + new UUID added via manifest."""
         group_dir = self._setup_group_with_git(manager)
 
-        # Simulate rename: old file gone, new file present, manifest updated
+        # Simulate rename: old file gone, new file present, manifest has new UUID
+        new_uuid = "00000000-0000-0000-0000-000000000088"
         (group_dir / "proj.todo").unlink()
         (group_dir / "renamed.todo").write_text("- [ ] original\n")
         manifest = group_dir / "manifest.json"
-        manifest.write_text(json.dumps({"projects": ["renamed"]}))
+        manifest.write_text(json.dumps({"projects": {new_uuid: "renamed"}}))
 
         with patch("todo.sync.shared_sync.SharedSync.smart_fetch",
                     return_value={"status": "behind", "local_sha": "a", "remote_sha": "b"}), \
@@ -579,11 +633,15 @@ class TestGroupManifest:
         assert "proj" not in reg["projects"]
         assert "renamed" in reg["projects"]
         assert "renamed" in reg["groups"]["team"]["projects"]
-        assert manager.data_dir / "renamed.todo"
+        assert (manager.data_dir / "renamed.todo").exists()
 
     def test_no_manifest_skips_reconciliation(self, manager):
         """Without manifest.json, sync doesn't delete anything (backward compat)."""
         group_dir = self._setup_group_with_git(manager)
+        # Remove manifest so reconciliation is skipped
+        manifest_file = group_dir / "manifest.json"
+        if manifest_file.exists():
+            manifest_file.unlink()
 
         with patch("todo.sync.shared_sync.SharedSync.smart_fetch",
                     return_value={"status": "behind", "local_sha": "a", "remote_sha": "b"}), \

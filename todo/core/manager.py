@@ -3,6 +3,7 @@ import subprocess
 import shutil
 import json
 import re
+import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
 from datetime import datetime
@@ -62,28 +63,66 @@ class TodoManager:
 
     # ── Group manifest ────────────────────────────────────────
 
-    def _write_group_manifest(self, group_name: str, projects: List[str]):
-        """Write manifest.json to a shared group directory."""
+    def _write_group_manifest(self, group_name: str, projects: List[str],
+                              registry: Dict = None):
+        """Write manifest.json to a shared group directory.
+
+        The manifest maps project UUIDs to project names (not filenames),
+        allowing each user to have different local names for the same project.
+        The name-to-file resolution is handled by get_project_path.
+        """
+        if registry is None:
+            registry = self.load_registry()
         group_dir = self.shared_dir / group_name
         if group_dir.exists():
-            manifest = {"projects": sorted(projects)}
+            uuid_map = {}
+            for proj_name in projects:
+                info = registry["projects"].get(proj_name)
+                if info and info.get("id"):
+                    uuid_map[info["id"]] = proj_name
+            manifest = {"projects": uuid_map}
             with open(group_dir / "manifest.json", "w") as f:
                 json.dump(manifest, f, indent=2)
 
-    def _read_group_manifest(self, group_dir: Path) -> Optional[List[str]]:
+    def _read_group_manifest(self, group_dir: Path) -> Optional[Dict[str, str]]:
         """Read manifest.json from a shared group directory.
 
-        Returns the project list, or None if no manifest exists.
+        Returns a dict mapping project UUID → project name,
+        or None if no manifest exists.
         """
         manifest_file = group_dir / "manifest.json"
         if manifest_file.exists():
             try:
                 with open(manifest_file, "r") as f:
                     data = json.load(f)
-                return data.get("projects", [])
+                projects = data.get("projects", {})
+                if isinstance(projects, dict):
+                    return projects
+                # Legacy format: list of names — skip UUID reconciliation
+                return None
             except (json.JSONDecodeError, IOError):
                 pass
         return None
+
+    def _resolve_project_by_uuid(self, registry: Dict, project_uuid: str) -> Optional[str]:
+        """Find the local project name for a given UUID."""
+        for name, info in registry["projects"].items():
+            if info.get("id") == project_uuid:
+                return name
+        return None
+
+    def _get_shared_project_path(self, group_dir: Path, project_name: str) -> Path:
+        """Return Path to the .todo file in a shared group directory.
+
+        Same resolution as get_project_path but for shared/ instead of data/.
+        """
+        flat = group_dir / f"{project_name}.todo"
+        if flat.exists():
+            return flat
+        index = group_dir / project_name / "index.todo"
+        if index.exists():
+            return index
+        return flat
 
     # ── Project CRUD ──────────────────────────────────────────
 
@@ -119,6 +158,7 @@ class TodoManager:
         ensure_task_ids(todo_path)
 
         registry["projects"][name] = {
+            "id": str(uuid.uuid4()),
             "created": datetime.now().isoformat(),
             "shared_in": [],
         }
@@ -235,8 +275,10 @@ class TodoManager:
         return True
 
     def rename_project(self, old_name: str, new_name: str) -> bool:
-        """Rename a project, updating data files, registry, groups, and manifests.
+        """Rename a project locally — only updates data files and registry.
 
+        Shared files and manifests are untouched because the UUID-based
+        manifest tracks projects by identity, not by local name.
         Also renames any subprojects (projects whose name starts with old_name/).
         """
         registry = self.load_registry()
@@ -259,8 +301,6 @@ class TodoManager:
             if new_pname != new_name and new_pname in registry["projects"]:
                 raise ValueError(f"Project '{new_pname}' already exists")
 
-        affected_groups = set()
-
         for old_pname, new_pname in to_rename.items():
             info = registry["projects"].pop(old_pname)
 
@@ -271,23 +311,15 @@ class TodoManager:
             if old_path.exists():
                 shutil.move(str(old_path), str(new_path))
 
-            # Update shared group files and references
+            # Update group project lists (local tracking only)
             for group_name in list(info.get("shared_in", [])):
                 group_info = registry["groups"].get(group_name)
                 if not group_info:
                     continue
-                # Rename file in shared dir
-                old_shared = self.shared_dir / group_name / f"{old_pname}.todo"
-                new_shared = self.shared_dir / group_name / f"{new_pname}.todo"
-                new_shared.parent.mkdir(parents=True, exist_ok=True)
-                if old_shared.exists():
-                    shutil.move(str(old_shared), str(new_shared))
-                # Update group project list
                 if old_pname in group_info["projects"]:
                     group_info["projects"].remove(old_pname)
                     group_info["projects"].append(new_pname)
                     group_info["projects"].sort()
-                affected_groups.add(group_name)
 
             # Update checksum cache (keyed by filename)
             checksums = self.conflict_manager.load_checksums()
@@ -300,12 +332,6 @@ class TodoManager:
             registry["projects"][new_pname] = info
 
         self.save_registry(registry)
-
-        # Update manifests for affected groups
-        for group_name in affected_groups:
-            group_info = registry["groups"].get(group_name)
-            if group_info:
-                self._write_group_manifest(group_name, group_info["projects"])
 
         # Clean up empty ancestor directories under data/
         parent = (self.data_dir / old_name).parent
@@ -417,8 +443,20 @@ class TodoManager:
         if project_name in registry["groups"][group_name]["projects"]:
             raise ValueError(f"Project '{project_name}' is already in group '{group_name}'")
 
+        group_dir = self.shared_dir / group_name
+
+        # If adding a subproject, migrate parent flat file to directory format
+        # in shared/ (same as create_project does in data/)
+        if "/" in project_name:
+            parent = project_name.rsplit("/", 1)[0]
+            parent_flat = group_dir / f"{parent}.todo"
+            parent_dir = group_dir / parent
+            if parent_flat.exists() and parent_flat.is_file():
+                parent_dir.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(parent_flat), str(parent_dir / "index.todo"))
+
         src = self.get_project_path(project_name)
-        dst = self.shared_dir / group_name / f"{project_name}.todo"
+        dst = group_dir / f"{project_name}.todo"
         dst.parent.mkdir(parents=True, exist_ok=True)
         if src.exists():
             shutil.copy2(src, dst)
@@ -428,7 +466,8 @@ class TodoManager:
             registry["projects"][project_name].setdefault("shared_in", []).append(group_name)
 
         self.save_registry(registry)
-        self._write_group_manifest(group_name, registry["groups"][group_name]["projects"])
+        self._write_group_manifest(group_name, registry["groups"][group_name]["projects"],
+                                   registry=registry)
 
     def setup_group_sync(self, group_name: str, remote_url: str) -> bool:
         """Sets up git remote for an existing group"""
@@ -504,6 +543,12 @@ class TodoManager:
             "created": datetime.now().isoformat(),
         }
 
+        # Read UUID manifest: maps UUID → project name
+        manifest = self._read_group_manifest(group_dir)
+        name_to_uuid = {}
+        if manifest:
+            name_to_uuid = {name: uid for uid, name in manifest.items()}
+
         for todo_file in group_dir.rglob("*.todo"):
             rel = todo_file.relative_to(group_dir)
             parts = rel.parts
@@ -518,13 +563,19 @@ class TodoManager:
 
             registry["groups"][group_name]["projects"].append(name)
 
+            project_uuid = name_to_uuid.get(name, str(uuid.uuid4()))
+
             if name not in registry["projects"]:
                 registry["projects"][name] = {
+                    "id": project_uuid,
                     "created": datetime.now().isoformat(),
                     "shared_in": [group_name],
                 }
-            elif group_name not in registry["projects"][name].get("shared_in", []):
-                registry["projects"][name].setdefault("shared_in", []).append(group_name)
+            else:
+                if not registry["projects"][name].get("id"):
+                    registry["projects"][name]["id"] = project_uuid
+                if group_name not in registry["projects"][name].get("shared_in", []):
+                    registry["projects"][name].setdefault("shared_in", []).append(group_name)
 
         self.save_registry(registry)
         return True
@@ -597,6 +648,12 @@ class TodoManager:
             "created": datetime.now().isoformat(),
         }
 
+        # Read UUID manifest: maps UUID → project name
+        manifest = self._read_group_manifest(group_dir)
+        name_to_uuid = {}
+        if manifest:
+            name_to_uuid = {name: uid for uid, name in manifest.items()}
+
         # Copy .todo files from cloned group into data/
         for todo_file in group_dir.rglob("*.todo"):
             rel = todo_file.relative_to(group_dir)
@@ -611,13 +668,19 @@ class TodoManager:
 
             registry["groups"][group_name]["projects"].append(name)
 
+            project_uuid = name_to_uuid.get(name, str(uuid.uuid4()))
+
             if name not in registry["projects"]:
                 registry["projects"][name] = {
+                    "id": project_uuid,
                     "created": datetime.now().isoformat(),
                     "shared_in": [group_name],
                 }
-            elif group_name not in registry["projects"][name]["shared_in"]:
-                registry["projects"][name]["shared_in"].append(group_name)
+            else:
+                if not registry["projects"][name].get("id"):
+                    registry["projects"][name]["id"] = project_uuid
+                if group_name not in registry["projects"][name].get("shared_in", []):
+                    registry["projects"][name].setdefault("shared_in", []).append(group_name)
 
         self.save_registry(registry)
         return True
@@ -681,11 +744,38 @@ class TodoManager:
                 # No incoming changes — skip merge, local data/ is authoritative
                 continue
 
-            # 4. Merge pulled group files → data/
+            # 4. Merge pulled group files → data/ (UUID-aware)
+            manifest = self._read_group_manifest(group_dir)
+            # Build UUID → local project name map for this group
+            local_uuid_map = {}  # uuid → local project name
+            for proj_name in group_info.get("projects", []):
+                info = registry["projects"].get(proj_name)
+                if info and info.get("id"):
+                    local_uuid_map[info["id"]] = proj_name
+
+            # Build shared name → UUID map from manifest for file resolution
+            shared_name_to_uuid = {}
+            if manifest:
+                shared_name_to_uuid = {name: uid for uid, name in manifest.items()}
+
             for todo_file in group_dir.rglob("*.todo"):
                 rel = todo_file.relative_to(group_dir)
-                project_name = str(rel.with_suffix(""))
-                dst = self.get_project_path(project_name)
+                parts = rel.parts
+                if parts[-1] == "index.todo":
+                    shared_name = str(Path(*parts[:-1]))
+                else:
+                    shared_name = str(rel.with_suffix(""))
+
+                # Resolve shared name → UUID → local project name
+                local_name = None
+                uid = shared_name_to_uuid.get(shared_name)
+                if uid:
+                    local_name = local_uuid_map.get(uid)
+                # Fallback: use shared name as local name
+                if local_name is None:
+                    local_name = shared_name
+
+                dst = self.get_project_path(local_name)
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 if dst.exists():
                     remote_content = todo_file.read_text()
@@ -704,15 +794,18 @@ class TodoManager:
                     self.conflict_manager.update_checksum(dst)
                 ensure_task_ids(dst)
 
-            # 4b. Reconcile: remove projects deleted remotely (via manifest)
-            manifest_projects = self._read_group_manifest(group_dir)
-            if manifest_projects is not None:
-                local_projects = set(group_info.get("projects", []))
-                remote_projects = set(manifest_projects)
-                removed = local_projects - remote_projects
-                added = remote_projects - local_projects
-                for proj_name in removed:
-                    # Remove local data/ file for this group's deleted project
+            # 4b. Reconcile: remove/add projects via UUID manifest
+            if manifest is not None:
+                local_uuids = set(local_uuid_map.keys())
+                remote_uuids = set(manifest.keys())
+                removed_uuids = local_uuids - remote_uuids
+                added_uuids = remote_uuids - local_uuids
+
+                for uid in removed_uuids:
+                    proj_name = local_uuid_map.get(uid)
+                    if not proj_name:
+                        continue
+                    # Remove local data/ file
                     dst = self.get_project_path(proj_name)
                     if dst.exists():
                         dst.unlink()
@@ -731,15 +824,25 @@ class TodoManager:
                             shared_in.remove(group_name)
                         if not shared_in:
                             del registry["projects"][proj_name]
-                for proj_name in added:
+                    if proj_name in group_info.get("projects", []):
+                        group_info["projects"].remove(proj_name)
+
+                for uid in added_uuids:
+                    proj_name = manifest[uid]  # manifest value is now the project name
                     if proj_name not in registry["projects"]:
                         registry["projects"][proj_name] = {
+                            "id": uid,
                             "created": datetime.now().isoformat(),
                             "shared_in": [group_name],
                         }
-                    elif group_name not in registry["projects"][proj_name].get("shared_in", []):
-                        registry["projects"][proj_name].setdefault("shared_in", []).append(group_name)
-                group_info["projects"] = sorted(remote_projects)
+                    else:
+                        if not registry["projects"][proj_name].get("id"):
+                            registry["projects"][proj_name]["id"] = uid
+                        if group_name not in registry["projects"][proj_name].get("shared_in", []):
+                            registry["projects"][proj_name].setdefault("shared_in", []).append(group_name)
+                    if proj_name not in group_info.get("projects", []):
+                        group_info["projects"].append(proj_name)
+
                 self.save_registry(registry)
 
         # 5. Ensure task IDs on all project files
@@ -755,22 +858,23 @@ class TodoManager:
                 continue
             for project_name in group_info.get("projects", []):
                 src = self.get_project_path(project_name)
-                if src.exists():
-                    dst = group_dir / f"{project_name}.todo"
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    if dst.exists():
-                        local_content = src.read_text()
-                        conflict = self.conflict_manager.check_conflicts(dst, local_content)
-                        if conflict:
-                            result = self.conflict_manager.merge_files(dst, local_content)
-                            dst.write_text(result["merged_content"])
-                            if result["conflicts"]:
-                                conflicts.extend(result["conflicts"])
-                        else:
-                            shutil.copy2(src, dst)
+                if not src.exists():
+                    continue
+                dst = self._get_shared_project_path(group_dir, project_name)
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                if dst.exists():
+                    local_content = src.read_text()
+                    conflict = self.conflict_manager.check_conflicts(dst, local_content)
+                    if conflict:
+                        result = self.conflict_manager.merge_files(dst, local_content)
+                        dst.write_text(result["merged_content"])
+                        if result["conflicts"]:
+                            conflicts.extend(result["conflicts"])
                     else:
                         shutil.copy2(src, dst)
-                    self.conflict_manager.update_checksum(dst)
+                else:
+                    shutil.copy2(src, dst)
+                self.conflict_manager.update_checksum(dst)
             self._write_group_manifest(group_name, group_info.get("projects", []))
 
         # 7. Commit+push main

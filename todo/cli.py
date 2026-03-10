@@ -118,9 +118,9 @@ def main():
     group_subparsers = group_parser.add_subparsers(dest='group_action')
     group_new = group_subparsers.add_parser('new', help='Create a new group')
     group_new.add_argument('name', help='Group name')
-    group_add = group_subparsers.add_parser('add', help='Add project to group')
-    group_add.add_argument('project', help='Project name')
-    group_add.add_argument('group_name', help='Group name')
+    group_add = group_subparsers.add_parser('add', help='Add project(s) to group')
+    group_add.add_argument('projects_and_group', nargs='+',
+                           help='One or more project names followed by the group name')
     group_sync = group_subparsers.add_parser('sync', help='Sync a group')
     group_sync.add_argument('group_name', help='Group name')
     group_invite = group_subparsers.add_parser('invite', help='Invite collaborator')
@@ -437,8 +437,29 @@ def main():
                 manager.create_group(args.name)
                 print(f"Created group: {args.name}")
             elif args.group_action == 'add':
-                manager.add_project_to_group(args.project, args.group_name)
-                print(f"Added '{args.project}' to group '{args.group_name}'")
+                if len(args.projects_and_group) < 2:
+                    print("Usage: todo group add <project> [<project2> ...] <group>")
+                    sys.exit(1)
+                group_name = args.projects_and_group[-1]
+                project_names = args.projects_and_group[:-1]
+                for project_name in project_names:
+                    manager.add_project_to_group(project_name, group_name)
+                    print(f"Added '{project_name}' to group '{group_name}'")
+                    # Check for subprojects and offer to add them too
+                    registry = manager.load_registry()
+                    prefix = project_name + "/"
+                    subprojects = [
+                        n for n in registry["projects"]
+                        if n.startswith(prefix)
+                        and n not in registry["groups"].get(group_name, {}).get("projects", [])
+                    ]
+                    if subprojects:
+                        names = ", ".join(subprojects)
+                        resp = input(f"Also add subprojects ({names})? [y/N]: ").strip().lower()
+                        if resp == "y":
+                            for sub in subprojects:
+                                manager.add_project_to_group(sub, group_name)
+                                print(f"Added '{sub}' to group '{group_name}'")
             elif args.group_action == 'sync':
                 print(f"Use interactive mode for the group sync wizard: run 'todo' then 'setup'")
             elif args.group_action == 'invite':

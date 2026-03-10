@@ -2451,12 +2451,26 @@ class TodoTUI:
 
         elif sub == 'add':
             if len(args) < 3:
-                self._add_output("✗ Usage: group add <project> <group>")
+                self._add_output("✗ Usage: group add <project> [<project2> ...] <group>")
                 return
-            project_name, group_name = args[1], args[2]
+            group_name = args[-1]
+            project_names = args[1:-1]
             try:
-                self.manager.add_project_to_group(project_name, group_name)
-                self._add_output(f"✓ Added '{project_name}' to group '{group_name}'")
+                for project_name in project_names:
+                    self.manager.add_project_to_group(project_name, group_name)
+                    self._add_output(f"✓ Added '{project_name}' to group '{group_name}'")
+                    # Check for subprojects and hint
+                    registry = self.manager.load_registry()
+                    prefix = project_name + "/"
+                    subprojects = [
+                        n for n in registry["projects"]
+                        if n.startswith(prefix)
+                        and n not in registry["groups"].get(group_name, {}).get("projects", [])
+                    ]
+                    if subprojects:
+                        names = ", ".join(subprojects)
+                        self._add_output(f"ℹ Subprojects not added: {names}")
+                        self._add_output(f"  Run 'group add <subproject> {group_name}' to add them")
             except ValueError as e:
                 self._add_output(f"✗ {e}")
 
