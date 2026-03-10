@@ -716,18 +716,24 @@ class TodoManager:
 
         return {"sync": sync_result, "conflicts": conflicts, "group_errors": group_errors}
 
-    def sync_setup(self, remote_url: str) -> bool:
-        """Setup git in ~/.todo/ with remote"""
+    def sync_setup(self, remote_url: str) -> str:
+        """Setup git in ~/.todo/ with remote.
+
+        Returns None on success, or an error message string on failure.
+        """
         main_sync = MainSync(self.home_dir, self.config)
         return main_sync.setup(remote_url)
 
-    def sync_clone(self, remote_url: str) -> bool:
-        """Clone existing ~/.todo/ from remote"""
+    def sync_clone(self, remote_url: str) -> str:
+        """Clone existing ~/.todo/ from remote.
+
+        Returns None on success, or an error message string on failure.
+        """
         main_sync = MainSync(self.home_dir, self.config)
-        result = main_sync.setup(remote_url, clone=True)
-        if result:
+        error = main_sync.setup(remote_url, clone=True)
+        if not error:
             self.reconstitute_groups()
-        return result
+        return error
 
     # ── Link / Unlink ─────────────────────────────────────────
 

@@ -62,9 +62,9 @@ class TestMainSyncCloneExistingDir:
         config.set("github_token", "fake-token")
         sync = MainSync(home_dir, config)
 
-        result = sync.setup(str(bare_remote), clone=True)
+        error = sync.setup(str(bare_remote), clone=True)
 
-        assert result is True
+        assert error is None, f"setup failed: {error}"
 
     def test_clone_sets_upstream_tracking(self, bare_remote, temp_dir):
         """After clone, git rev-parse @{u} should work (upstream is set)."""
@@ -74,7 +74,8 @@ class TestMainSyncCloneExistingDir:
         config = TodoConfig(home_dir / "config.json")
         config.set("github_token", "fake-token")
         sync = MainSync(home_dir, config)
-        sync.setup(str(bare_remote), clone=True)
+        error = sync.setup(str(bare_remote), clone=True)
+        assert error is None, f"setup failed: {error}"
 
         result = subprocess.run(
             ["git", "rev-parse", "@{u}"],
@@ -89,7 +90,8 @@ class TestMainSyncCloneExistingDir:
 
         config = TodoConfig(home_dir / "config.json")
         sync = MainSync(home_dir, config)
-        sync.setup(str(bare_remote), clone=True)
+        error = sync.setup(str(bare_remote), clone=True)
+        assert error is None, f"setup failed: {error}"
 
         assert (home_dir / "data" / "myproject.todo").exists()
         assert "synced task" in (home_dir / "data" / "myproject.todo").read_text()
@@ -101,7 +103,8 @@ class TestMainSyncCloneExistingDir:
 
         config = TodoConfig(home_dir / "config.json")
         sync = MainSync(home_dir, config)
-        sync.setup(str(bare_remote), clone=True)
+        error = sync.setup(str(bare_remote), clone=True)
+        assert error is None, f"setup failed: {error}"
 
         assert config.get("sync_enabled") is True
         assert config.get("sync_remote") == str(bare_remote)
@@ -113,7 +116,8 @@ class TestMainSyncCloneExistingDir:
 
         config = TodoConfig(home_dir / "config.json")
         sync = MainSync(home_dir, config)
-        sync.setup(str(bare_remote), clone=True)
+        error = sync.setup(str(bare_remote), clone=True)
+        assert error is None, f"setup failed: {error}"
 
         result = sync.full_sync()
         assert result["status"] != "error"
@@ -126,7 +130,8 @@ class TestMainSyncCloneExistingDir:
         config = TodoConfig(home_dir / "config.json")
         config.set("github_token", "fake-token")
         sync = MainSync(home_dir, config)
-        sync.setup(str(bare_remote), clone=True)
+        error = sync.setup(str(bare_remote), clone=True)
+        assert error is None, f"setup failed: {error}"
 
         # Commit any config changes so working tree is clean
         subprocess.run(["git", "add", "."], cwd=home_dir, capture_output=True)
@@ -154,7 +159,7 @@ class TestSharedSyncCloneExistingDir:
         sync = SharedSync(group_dir, config)
 
         result = sync.clone(str(bare_remote))
-        assert result is True
+        assert result is True, "clone returned False"
 
     def test_clone_sets_upstream_tracking(self, bare_remote, temp_dir):
         group_dir = temp_dir / "shared" / "team"

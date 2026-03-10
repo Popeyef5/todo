@@ -30,10 +30,13 @@ class MainSync(GitSyncBase):
             return {"GIT_TERMINAL_PROMPT": "0"}
         return get_git_auth_env(token, remote_url)
 
-    def setup(self, remote_url: str, clone: bool = False) -> bool:
-        """Initialize git repo and configure remote. If clone=True, clone from remote first."""
+    def setup(self, remote_url: str, clone: bool = False) -> str:
+        """Initialize git repo and configure remote. If clone=True, clone from remote first.
+
+        Returns None on success, or an error message string on failure.
+        """
         if not self.is_git_available():
-            return False
+            return "git is not installed or not found in PATH"
 
         if clone:
             # ~/.todo/ may already exist with files from ensure_structure().
@@ -49,7 +52,8 @@ class MainSync(GitSyncBase):
                     capture_output=True, text=True, env=env,
                 )
                 if result.returncode != 0:
-                    return False
+                    stderr = result.stderr.strip()
+                    return f"git clone failed: {stderr}"
 
                 tmp_path = Path(tmp)
 
@@ -73,7 +77,7 @@ class MainSync(GitSyncBase):
             self._configure_git()
             self.config.set("sync_enabled", True)
             self.config.set("sync_remote", remote_url)
-            return True
+            return None
 
         # Init new repo
         if not self.git_dir.exists():
@@ -93,11 +97,13 @@ class MainSync(GitSyncBase):
 
         # Initial commit + push
         self._commit_all_changes("initial setup")
-        self.push()
+        pushed = self.push()
+        if not pushed:
+            return "initial push failed — check your URL and credentials"
 
         self.config.set("sync_enabled", True)
         self.config.set("sync_remote", remote_url)
-        return True
+        return None
 
     def push(self) -> bool:
         """Push to remote"""

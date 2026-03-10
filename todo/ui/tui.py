@@ -2561,11 +2561,12 @@ class TodoTUI:
                 self._add_output("✗ Setup failed. Check your URL and auth.")
         else:
             self._add_output("  Configuring sync...")
-            if self.manager.sync_setup(remote_url):
+            error = self.manager.sync_setup(remote_url)
+            if not error:
                 self._add_output(f"✓ Sync configured: {remote_url}")
                 self._start_background_sync()
             else:
-                self._add_output("✗ Setup failed. Check your URL and auth.")
+                self._add_output(f"✗ Setup failed: {error}")
         self._reset_input_mode()
 
     def _make_provider(self, provider, token):

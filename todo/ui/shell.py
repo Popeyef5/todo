@@ -945,16 +945,17 @@ class TodoShell:
         print()
 
         # ── Step 4: Apply ──
-        print(render.dim("  Configuring sync..."))
         if is_existing_repo:
-            success = self.manager.sync_clone(remote_url)
+            print(render.dim("  Cloning from existing repo..."))
+            error = self.manager.sync_clone(remote_url)
         else:
-            success = self.manager.sync_setup(remote_url)
-        if success:
+            print(render.dim("  Initializing new repo..."))
+            error = self.manager.sync_setup(remote_url)
+        if not error:
             print(render.success(f"Sync configured: {remote_url}"))
             self._start_background_sync()
         else:
-            print(render.error("Setup failed. Check your URL and auth."))
+            print(render.error(f"Setup failed: {error}"))
 
     def _setup_auth(self, provider: str):
         """Handle auth for a provider. Returns (token, username) or (None, None)."""

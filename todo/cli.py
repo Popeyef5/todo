@@ -517,10 +517,11 @@ def main():
 
         elif args.command == 'sync':
             if args.sync_action == 'clone':
-                if manager.sync_clone(args.remote_url):
+                error = manager.sync_clone(args.remote_url)
+                if not error:
                     print("Cloned successfully")
                 else:
-                    print("Clone failed")
+                    print(f"Clone failed: {error}")
                     sys.exit(1)
             else:
                 # 'now' or no subcommand — just sync
