@@ -1,7 +1,6 @@
 """Git sync for the main ~/.todo/ repository"""
 
 import os
-import subprocess
 from pathlib import Path
 
 from .auth import get_git_auth_env, resolve_token, is_https_url
@@ -34,23 +33,42 @@ class MainSync(GitSyncBase):
             return False
 
         if clone:
-            try:
-                auth = self._auth_env_for_url(remote_url)
-                env = {**os.environ, **auth}
-                subprocess.run(
-                    ["git", "clone", remote_url, str(self.directory)],
-                    capture_output=True, check=True, env=env,
-                )
-                self._configure_git()
-                # Ensure upstream tracking is set for the current branch
-                # Get current branch name and set its upstream
-                branch = self._git("rev-parse", "--abbrev-ref", "HEAD")
-                if branch.returncode == 0:
-                    branch_name = branch.stdout.strip()
-                    self._git("branch", f"--set-upstream-to=origin/{branch_name}")
-                return True
-            except subprocess.CalledProcessError:
+            # Directory may already exist (created by ensure_structure),
+            # so use init+fetch+checkout instead of git clone
+            if not self.git_dir.exists():
+                self._git("init")
+
+            self._configure_git()
+
+            result = self._git("remote", "add", "origin", remote_url)
+            if result.returncode != 0:
+                self._git("remote", "set-url", "origin", remote_url)
+
+            auth_env = self._auth_env_for_url(remote_url)
+            result = self._git("fetch", "origin", auth_env=auth_env)
+            if result.returncode != 0:
                 return False
+
+            # Detect the default branch from the remote
+            result = self._git("symbolic-ref", "refs/remotes/origin/HEAD")
+            if result.returncode == 0:
+                default_branch = result.stdout.strip().replace("refs/remotes/origin/", "")
+            else:
+                # Fallback: try main, then master
+                default_branch = "main"
+                check = self._git("rev-parse", "--verify", "origin/main")
+                if check.returncode != 0:
+                    default_branch = "master"
+
+            result = self._git("checkout", "-B", default_branch, f"origin/{default_branch}")
+            if result.returncode != 0:
+                return False
+
+            self._git("branch", f"--set-upstream-to=origin/{default_branch}")
+
+            self.config.set("sync_enabled", True)
+            self.config.set("sync_remote", remote_url)
+            return True
 
         # Init new repo
         if not self.git_dir.exists():
