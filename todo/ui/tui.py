@@ -12,6 +12,8 @@ import io
 import shlex
 import sys
 import termios
+import threading
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -97,6 +99,15 @@ class TodoTUI:
         # Registry cache (refreshed with tasks)
         self._registry_cache = {}
 
+        # Sync status indicator (right side of status bar)
+        self._sync_status = ''        # current display text
+        self._sync_error = ''         # error message if last sync failed
+        self._sync_ok_until = 0.0     # show "synced" until this timestamp
+        self._last_sync_time = None   # datetime of last successful sync
+        self._sync_spinner_frame = 0  # animation frame index
+        self._sync_in_progress = False  # True while async sync is running
+        self._sync_thread = None      # thread for async sync command
+
     def run(self):
         """Entry point"""
         curses.wrapper(self._main)
@@ -126,8 +137,7 @@ class TodoTUI:
         if self._initial_target:
             self._set_project(self._initial_target)
 
-        # Initial sync (async — UI renders immediately)
-        self._add_output("syncing...")
+        # Initial sync (async — UI renders immediately, spinner in status bar)
         self._start_background_sync()
 
         self._refresh_tasks()
@@ -139,6 +149,9 @@ class TodoTUI:
         self._full_render()
 
         while True:
+            # Faster tick when spinner is active for smooth animation
+            self.stdscr.timeout(100 if self._sync_in_progress else 1000)
+
             try:
                 key = self.stdscr.getch()
             except KeyboardInterrupt:
@@ -146,8 +159,10 @@ class TodoTUI:
                 return
 
             if key == -1:
-                # Timeout — check for background sync and refresh dynamic content
+                # Timeout — check for background/async sync and refresh dynamic content
                 self._check_pending_sync()
+                self._check_async_sync()
+                self._render_sync_status()
                 self._render_mid_banner()
                 self._render_top_banner()
                 curses.doupdate()
@@ -593,8 +608,14 @@ class TodoTUI:
         else:
             hint = " ^T:mode  ^F:full  ^S:staging  PgUp/PgDn:scroll  Tab:complete"
 
-        bar = f"{mode_label}{sep}{project_label} {sep}{hint}"
-        bar = bar.ljust(w)
+        sync_text = self._get_sync_status_text()
+        right = f" {sync_text} " if sync_text else ""
+
+        left = f"{mode_label}{sep}{project_label} {sep}{hint}"
+        # Pad so right part is flush-right
+        pad = max(w - len(left) - len(right), 0)
+        bar = left + " " * pad + right
+        bar = bar[:w]  # trim to width
 
         attr = curses.color_pair(6) | curses.A_BOLD
         try:
@@ -1688,6 +1709,12 @@ class TodoTUI:
         self.dirty = True
 
     def _sync_quiet(self) -> dict:
+        """Run manager.sync() suppressing stdout/stderr.
+
+        IMPORTANT: only call from the main thread.  For background use,
+        call manager.sync() directly inside the thread (subprocess output
+        goes to pipes already).
+        """
         old_stdout = sys.stdout
         old_stderr = sys.stderr
         sys.stdout = io.StringIO()
@@ -1700,6 +1727,13 @@ class TodoTUI:
             sys.stdout = old_stdout
             sys.stderr = old_stderr
         return result
+
+    def _sync_in_thread(self) -> dict:
+        """Run manager.sync() from a background thread (no stdout redirect)."""
+        try:
+            return self.manager.sync()
+        except Exception:
+            return {"sync": {"status": "error"}, "conflicts": []}
 
     def _start_background_sync(self):
         """Start background sync in fetch-only mode.
@@ -1714,6 +1748,8 @@ class TodoTUI:
                 self._main_sync, interval=interval,
             )
             self._bg_sync.start()
+            # Run initial full sync async so the spinner animates
+            self._run_async_sync()
 
     def _stop_background_sync(self):
         """Stop background sync checker."""
@@ -1724,23 +1760,100 @@ class TodoTUI:
     def _check_pending_sync(self):
         """Check if background fetch detected remote changes.
 
-        If the remote is ahead, do the actual pull/merge here on the main
-        thread — this is a safe point between user actions so there are no
-        concurrent disk writes.
+        If the remote is ahead, kick off an async sync (non-blocking).
+        Skip if an async sync is already running.
         """
-        if not self._bg_sync or not self._bg_sync.state.needs_apply:
+        if not self._bg_sync:
+            return
+        if not self._bg_sync.state.needs_apply:
+            return
+        if self._sync_in_progress:
             return
         self._bg_sync.state.mark_applied()
-        result = self._sync_quiet()
+        self._run_async_sync()
+
+    # ── Async sync (for sync/push/pull commands) ──────────────────────
+
+    def _run_async_sync(self):
+        """Run a full sync in a background thread (non-blocking)."""
+        if self._sync_in_progress:
+            self._add_output("ℹ Sync already in progress")
+            return
+        main_sync = MainSync(self.manager.home_dir, self.manager.config)
+        if not main_sync.is_sync_enabled():
+            self._add_output("ℹ Sync is not configured. Run 'setup' to configure.")
+            return
+        self._set_sync_status_syncing()
+        self._sync_result = None
+
+        def do_sync():
+            try:
+                self._sync_result = self._sync_in_thread()
+            except Exception:
+                self._sync_result = {"sync": {"status": "error"}, "conflicts": []}
+
+        self._sync_thread = threading.Thread(target=do_sync, daemon=True)
+        self._sync_thread.start()
+
+    def _check_async_sync(self):
+        """Check if an async sync command has finished."""
+        if not self._sync_thread or self._sync_thread.is_alive():
+            return
+        self._sync_thread = None
+        result = getattr(self, '_sync_result', None) or {"sync": {"status": "error"}, "conflicts": []}
+        self._sync_result = None
         self._refresh_tasks()
+        self.dirty = False
         conflicts = result.get("conflicts", [])
-        if conflicts:
+        sync_status = result.get("sync", {}).get("status", "error")
+        if sync_status == "error":
+            self._set_sync_status_error("sync failed")
+        elif conflicts:
             self._add_output(f"⚠ synced with {len(conflicts)} conflict(s)")
             for c in conflicts:
                 self._add_output(f"  ⚠ {c}")
+            self._set_sync_status_error(f"{len(conflicts)} conflict(s)")
         else:
-            self._add_output("↓ synced from remote")
+            self._set_sync_status_ok()
         self._full_render()
+
+    # ── Sync status indicator ─────────────────────────────────────────
+
+    _SYNC_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+    def _set_sync_status_syncing(self):
+        self._sync_in_progress = True
+        self._sync_spinner_frame = 0
+        self._sync_error = ''
+
+    def _set_sync_status_ok(self):
+        self._sync_in_progress = False
+        self._sync_error = ''
+        self._last_sync_time = time.time()
+        self._sync_ok_until = time.time() + 60
+
+    def _set_sync_status_error(self, msg: str):
+        self._sync_in_progress = False
+        self._sync_error = msg
+
+    def _get_sync_status_text(self) -> str:
+        """Return the text to show on the right side of the status bar."""
+        if self._sync_in_progress:
+            frame = self._SYNC_FRAMES[self._sync_spinner_frame % len(self._SYNC_FRAMES)]
+            self._sync_spinner_frame += 1
+            return f"{frame} syncing..."
+        if self._sync_error:
+            return f"✗ {self._sync_error}"
+        if self._sync_ok_until and time.time() < self._sync_ok_until:
+            return "✓ synced"
+        if self._last_sync_time:
+            t = time.localtime(self._last_sync_time)
+            return f"last sync {t.tm_hour:02d}:{t.tm_min:02d}"
+        return ''
+
+    def _render_sync_status(self):
+        """Re-render just the status bar to update sync indicator."""
+        self._render_status_bar()
 
     def _add_output(self, text: str):
         for line in text.split('\n'):
@@ -1779,8 +1892,6 @@ class TodoTUI:
 
     def _quit_with_sync(self):
         """Sync before exit with an animated progress indicator."""
-        import threading
-
         result_holder = [None]
         error_holder = [None]
 
@@ -2573,6 +2684,7 @@ class TodoTUI:
                 error = self.manager.sync_setup(remote_url)
             if not error:
                 self._add_output(f"✓ Sync configured: {remote_url}")
+                self._refresh_tasks()
                 self._start_background_sync()
             else:
                 self._add_output(f"✗ Setup failed: {error}")
@@ -2588,44 +2700,13 @@ class TodoTUI:
         return None
 
     def _cmd_sync(self, args):
-        main_sync = MainSync(self.manager.home_dir, self.manager.config)
-        if not main_sync.is_sync_enabled():
-            self._add_output("ℹ Sync is not configured. Run 'setup' to configure.")
-            return
-        self._add_output("  syncing...")
-        result = self._sync_quiet()
-        self._refresh_tasks()
-        conflicts = result.get("conflicts", [])
-        if conflicts:
-            self._add_output(f"⚠ synced with {len(conflicts)} conflict(s)")
-            for c in conflicts:
-                self._add_output(f"  ⚠ {c}")
-        else:
-            self._add_output("✓ Synced")
+        self._run_async_sync()
 
     def _cmd_push(self, args):
-        self._add_output("  syncing...")
-        result = self._sync_quiet()
-        self.dirty = False
-        conflicts = result.get("conflicts", [])
-        if conflicts:
-            self._add_output(f"⚠ pushed with {len(conflicts)} conflict(s)")
-            for c in conflicts:
-                self._add_output(f"  ⚠ {c}")
-        else:
-            self._add_output("✓ Pushed")
+        self._run_async_sync()
 
     def _cmd_pull(self, args):
-        self._add_output("  syncing...")
-        result = self._sync_quiet()
-        self._refresh_tasks()
-        conflicts = result.get("conflicts", [])
-        if conflicts:
-            self._add_output(f"⚠ pulled with {len(conflicts)} conflict(s)")
-            for c in conflicts:
-                self._add_output(f"  ⚠ {c}")
-        else:
-            self._add_output("✓ Pulled")
+        self._run_async_sync()
 
     def _cmd_status(self, args):
         project_list = self.manager.list_projects()
