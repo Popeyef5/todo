@@ -1787,6 +1787,7 @@ class TodoTUI:
 
     def _propagate(self):
         self.dirty = True
+        self._dirty_gen = getattr(self, '_dirty_gen', 0) + 1
 
     def _sync_quiet(self) -> dict:
         """Run manager.sync() suppressing stdout/stderr.
@@ -1865,6 +1866,7 @@ class TodoTUI:
             return
         self._set_sync_status_syncing()
         self._sync_result = None
+        self._dirty_gen_at_sync_start = getattr(self, '_dirty_gen', 0)
 
         def do_sync():
             try:
@@ -1883,7 +1885,9 @@ class TodoTUI:
         result = getattr(self, '_sync_result', None) or {"sync": {"status": "error"}, "conflicts": []}
         self._sync_result = None
         self._refresh_tasks()
-        self.dirty = False
+        # Only clear dirty if no new edits happened during the sync
+        if getattr(self, '_dirty_gen', 0) == self._dirty_gen_at_sync_start:
+            self.dirty = False
         conflicts = result.get("conflicts", [])
         sync_status = result.get("sync", {}).get("status", "error")
         if sync_status == "error":
