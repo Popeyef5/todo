@@ -29,10 +29,18 @@ class ConflictManager:
                 pass
         return {}
     
+    def _checksum_key(self, file_path: Path) -> str:
+        """Return a unique key for a file in the checksums map.
+
+        Uses the absolute path so that files with the same basename
+        (e.g. multiple index.todo) don't collide.
+        """
+        return str(file_path.resolve())
+
     def update_checksum(self, file_path: Path):
-        """Hash the file and store in checksums map keyed by file name"""
+        """Hash the file and store in checksums map keyed by resolved path"""
         checksums = self.load_checksums()
-        checksums[file_path.name] = FileHasher.hash_file(file_path)
+        checksums[self._checksum_key(file_path)] = FileHasher.hash_file(file_path)
         self.save_checksums(checksums)
     
     def check_conflicts(self, file_path: Path, content: str) -> Optional[str]:
@@ -44,7 +52,7 @@ class ConflictManager:
         content_hash = FileHasher.hash_content(content)
         
         checksums = self.load_checksums()
-        stored_hash = checksums.get(file_path.name)
+        stored_hash = checksums.get(self._checksum_key(file_path))
         
         if stored_hash is None:
             return None

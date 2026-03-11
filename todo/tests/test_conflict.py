@@ -9,8 +9,9 @@ class TestConflictManager:
         f.write_text("- [ ] task one\n")
         conflict_manager.update_checksum(f)
         checksums = conflict_manager.load_checksums()
-        assert "test.todo" in checksums
-        assert len(checksums["test.todo"]) == 64
+        key = str(f.resolve())
+        assert key in checksums
+        assert len(checksums[key]) == 64
 
     def test_no_conflict_when_no_stored_checksum(self, conflict_manager, temp_dir):
         f = temp_dir / "test.todo"
