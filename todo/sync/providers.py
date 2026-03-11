@@ -13,8 +13,12 @@ class GitProvider(ABC):
     """Abstract base class for git hosting providers"""
 
     @abstractmethod
-    def get_latest_sha(self, owner: str, repo: str) -> Optional[str]:
-        """Check remote HEAD via API for fast change detection"""
+    def get_latest_sha(self, owner: str, repo: str, branch: str = None) -> Optional[str]:
+        """Check remote branch SHA via API for fast change detection.
+
+        Args:
+            branch: Branch name to check. If None, uses the remote's default branch.
+        """
         pass
 
     @abstractmethod
@@ -68,8 +72,9 @@ class GitHubProvider(GitProvider):
         except (urllib.error.URLError, urllib.error.HTTPError, OSError):
             return None
 
-    def get_latest_sha(self, owner: str, repo: str) -> Optional[str]:
-        url = f"{self.API_BASE}/repos/{owner}/{repo}/commits/HEAD"
+    def get_latest_sha(self, owner: str, repo: str, branch: str = None) -> Optional[str]:
+        ref = branch or "HEAD"
+        url = f"{self.API_BASE}/repos/{owner}/{repo}/commits/{ref}"
         req = urllib.request.Request(url, headers={
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/vnd.github.sha",
@@ -144,10 +149,11 @@ class GitLabProvider(GitProvider):
         except (urllib.error.URLError, urllib.error.HTTPError, OSError):
             return None
 
-    def get_latest_sha(self, owner: str, repo: str) -> Optional[str]:
+    def get_latest_sha(self, owner: str, repo: str, branch: str = None) -> Optional[str]:
         project = urllib.parse.quote(f"{owner}/{repo}", safe="")
+        ref = branch or "HEAD"
         resp = self._request(
-            f"/projects/{project}/repository/commits?ref_name=HEAD&per_page=1"
+            f"/projects/{project}/repository/commits?ref_name={urllib.parse.quote(ref)}&per_page=1"
         )
         if resp is None:
             return None
@@ -214,7 +220,7 @@ class GitLabProvider(GitProvider):
 class GenericGitProvider(GitProvider):
     """Fallback provider for non-GitHub/GitLab hosts"""
 
-    def get_latest_sha(self, owner: str, repo: str) -> Optional[str]:
+    def get_latest_sha(self, owner: str, repo: str, branch: str = None) -> Optional[str]:
         return None
 
     def create_repo(self, name: str, private: bool = True) -> Optional[str]:

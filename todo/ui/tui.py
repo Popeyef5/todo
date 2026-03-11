@@ -1823,12 +1823,15 @@ class TodoTUI:
         The main thread applies pull/merge at safe points via _check_pending_sync().
         """
         self._main_sync = MainSync(self.manager.home_dir, self.manager.config)
-        if self._main_sync.is_sync_enabled():
-            interval = self.manager.config.get("sync_interval", 1800)
-            self._bg_sync = BackgroundSync(
-                self._main_sync, interval=interval,
-            )
-            self._bg_sync.start()
+        sync_enabled = self._main_sync.is_sync_enabled()
+        interval = self.manager.config.get("sync_interval", 1800) if sync_enabled else 5
+        self._bg_sync = BackgroundSync(
+            self._main_sync if sync_enabled else None,
+            interval=interval,
+            watch_dirs=[self.manager.data_dir, self.manager.shared_dir],
+        )
+        self._bg_sync.start()
+        if sync_enabled:
             # Run initial full sync async so the spinner animates
             self._run_async_sync()
 

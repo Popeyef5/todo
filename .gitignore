@@ -4,4 +4,5 @@
 *.todo
 .todo.json
 
-*.egg-info
+*.egg-info/
+build/

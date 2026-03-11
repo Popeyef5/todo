@@ -1208,10 +1208,14 @@ class TodoShell:
     def _start_background_sync(self):
         """Start background sync checker if sync is enabled."""
         main_sync = MainSync(self.manager.home_dir, self.manager.config)
-        if main_sync.is_sync_enabled():
-            interval = self.manager.config.get("sync_interval", 60)
-            self._bg_sync = BackgroundSync(main_sync, interval=interval)
-            self._bg_sync.start()
+        sync_enabled = main_sync.is_sync_enabled()
+        interval = self.manager.config.get("sync_interval", 60) if sync_enabled else 5
+        self._bg_sync = BackgroundSync(
+            main_sync if sync_enabled else None,
+            interval=interval,
+            watch_dirs=[self.manager.data_dir, self.manager.shared_dir],
+        )
+        self._bg_sync.start()
 
     def _stop_background_sync(self):
         """Stop background sync checker."""

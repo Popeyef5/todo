@@ -114,6 +114,48 @@ class GitSyncBase(SyncInterface):
                 return get_git_auth_env(token, remote_url)
         return {"GIT_TERMINAL_PROMPT": "0"}
 
+    def _get_tracking_branch(self) -> Optional[str]:
+        """Get the remote branch name that the current branch tracks (e.g. 'main')."""
+        result = self._git("rev-parse", "--abbrev-ref", "@{u}")
+        if result.returncode == 0:
+            # Returns e.g. "origin/main" — strip the remote prefix
+            full = result.stdout.strip()
+            parts = full.split("/", 1)
+            return parts[1] if len(parts) == 2 else full
+        return None
+
+    def quick_check(self) -> dict:
+        """Lightweight remote change detection via HTTP API, with git fetch fallback.
+
+        Returns dict with:
+            'status': 'up_to_date' | 'behind' | 'error'
+            'local_sha': str
+            'remote_sha': str
+        """
+        remote_url = self._get_remote_url()
+        if not remote_url:
+            return {"status": "error", "local_sha": None, "remote_sha": None}
+
+        local_sha = self._get_head_sha()
+        if not local_sha:
+            return {"status": "error", "local_sha": None, "remote_sha": None}
+
+        _, owner, repo = parse_remote_url(remote_url)
+        if not owner or not repo:
+            return self.smart_fetch()
+
+        provider = detect_provider(remote_url, self.config)
+        branch = self._get_tracking_branch()
+        remote_sha = provider.get_latest_sha(owner, repo, branch)
+
+        if remote_sha is None:
+            return self.smart_fetch()
+
+        if local_sha == remote_sha:
+            return {"status": "up_to_date", "local_sha": local_sha, "remote_sha": remote_sha}
+
+        return {"status": "behind", "local_sha": local_sha, "remote_sha": remote_sha}
+
     def smart_fetch(self) -> dict:
         """Fetch from remote and compare refs to determine sync action needed.
 

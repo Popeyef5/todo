@@ -1,8 +1,10 @@
 """Background sync - runs full sync in a daemon thread without blocking the UI"""
 
 import io
+import os
 import sys
 import threading
+from pathlib import Path
 from typing import Callable, List, Optional
 
 
@@ -12,6 +14,7 @@ class SyncState:
     def __init__(self):
         self._lock = threading.Lock()
         self._needs_apply = False
+        self._needs_reload = False
         self._sync_conflicts: List[str] = []
         self._last_error: Optional[str] = None
         self._check_in_progress = False
@@ -19,7 +22,7 @@ class SyncState:
     @property
     def needs_apply(self) -> bool:
         with self._lock:
-            return self._needs_apply
+            return self._needs_apply or self._needs_reload
 
     @property
     def last_error(self) -> Optional[str]:
@@ -60,10 +63,16 @@ class SyncState:
         with self._lock:
             self._check_in_progress = False
 
+    def set_local_change(self):
+        """Called by background thread when local file changes are detected."""
+        with self._lock:
+            self._needs_reload = True
+
     def mark_applied(self) -> List[str]:
         """Called by main thread after refreshing tasks. Returns any conflicts."""
         with self._lock:
             self._needs_apply = False
+            self._needs_reload = False
             conflicts = self._sync_conflicts
             self._sync_conflicts = []
             return conflicts
@@ -84,20 +93,24 @@ class BackgroundSync:
     """
 
     def __init__(self, main_sync, interval: int = 60,
-                 sync_fn: Callable[[], dict] = None):
+                 sync_fn: Callable[[], dict] = None,
+                 watch_dirs: List[Path] = None):
         """
         Args:
             main_sync: MainSync instance (used for is_sync_enabled and fetch-only mode)
             interval: Seconds between checks
             sync_fn: Optional callable that runs a full sync and returns a result dict
                      with keys 'sync' (dict with 'pulled') and 'conflicts' (list).
+            watch_dirs: Optional list of directories to watch for local file changes.
         """
         self.main_sync = main_sync
         self.interval = interval
         self.sync_fn = sync_fn
+        self.watch_dirs = watch_dirs or []
         self.state = SyncState()
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self._last_mtimes: dict = {}
 
     def start(self):
         """Start the background sync thread"""
@@ -131,7 +144,9 @@ class BackgroundSync:
         """Run a single sync cycle"""
         self.state.set_check_started()
         try:
-            if not self.main_sync.is_sync_enabled():
+            self._check_local_changes()
+
+            if not self.main_sync or not self.main_sync.is_sync_enabled():
                 self.state.set_check_finished()
                 return
 
@@ -142,6 +157,24 @@ class BackgroundSync:
 
         except Exception as e:
             self.state.set_error(str(e))
+
+    def _check_local_changes(self):
+        """Detect local file changes by comparing mtimes of .todo files."""
+        if not self.watch_dirs:
+            return
+        current_mtimes = {}
+        for d in self.watch_dirs:
+            if not d.is_dir():
+                continue
+            for f in d.iterdir():
+                if f.suffix == ".todo" and f.is_file():
+                    try:
+                        current_mtimes[str(f)] = os.path.getmtime(f)
+                    except OSError:
+                        pass
+        if self._last_mtimes and current_mtimes != self._last_mtimes:
+            self.state.set_local_change()
+        self._last_mtimes = current_mtimes
 
     def _do_full_sync(self):
         """Full sync mode: push local + pull remote in background."""
@@ -162,8 +195,8 @@ class BackgroundSync:
         self.state.set_sync_complete(pulled, conflicts)
 
     def _do_fetch_only(self):
-        """Fetch-only mode: just detect remote changes."""
-        result = self.main_sync.smart_fetch()
+        """Fetch-only mode: detect remote changes via lightweight HTTP API (git fetch fallback)."""
+        result = self.main_sync.quick_check()
 
         if result["status"] == "error":
             self.state.set_error("fetch failed")
